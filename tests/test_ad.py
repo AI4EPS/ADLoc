@@ -99,7 +99,7 @@ class Linear(nn.Module):
 
     def forward(self, input):
         # See the autograd section for explanation of what happens here.
-        return LinearFunction.apply(input, self.weight, self.bias)
+        return LinearFunction.apply(input, self.weight, self.bias) # apply(fn): applies fn recursively to submodule and self
 
     def extra_repr(self):
         # (Optional)Set the extra information about this module. You can test
@@ -112,6 +112,7 @@ class Linear(nn.Module):
 torch.manual_seed(0)
 linear = Linear(5, 3)
 input = torch.randn(2, 5)
+print(input)
 input.requires_grad = True
 output = linear(input)
 grad_output = output.backward(torch.randn(2, 3))

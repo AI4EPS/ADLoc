@@ -348,6 +348,7 @@ class TravelTime(nn.Module):
 def main(args):
     # %%
     data_path = Path("test_data")
+    data_path = data_path / "test"
     figure_path = Path("figures")
     figure_path.mkdir(exist_ok=True)
 
@@ -383,9 +384,13 @@ def main(args):
         eikonal = None
 
     # %%
-    stations = pd.read_csv(data_path / "stations.csv", delimiter="\t")
-    picks = pd.read_csv(data_path / "picks_gamma.csv", delimiter="\t", parse_dates=["phase_time"])
-    events = pd.read_csv(data_path / "catalog_gamma.csv", delimiter="\t", parse_dates=["time"])
+    stations = pd.read_csv(data_path / "stations.csv")
+    print(stations)
+    # picks = pd.read_csv(data_path / "picks_gamma.csv", delimiter="\t", parse_dates=["phase_time"])
+    # events = pd.read_csv(data_path / "catalog_gamma.csv", delimiter="\t", parse_dates=["time"])
+    picks = pd.read_csv(data_path / "gamma_picks.csv", parse_dates=["phase_time"])
+    print(picks)
+    events = pd.read_csv(data_path / "gamma_catalog.csv", parse_dates=["time"])
 
     events = events[events["event_index"] < 100]
     picks = picks[picks["event_index"] < 100]
