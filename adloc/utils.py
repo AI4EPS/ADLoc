@@ -129,9 +129,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             reg.fit(X[["idx_sta", "type", "score"]].values, X[["t_s"]].values)
     except Exception as e:
         # print(f"No valid model for event_index {event_index}.")
-        # message = "RANSAC could not find a valid consensus set."
-        # if str(e)[: len(message)] != message:
-        #     print(e)
+        message = "RANSAC could not find a valid consensus set."
+        if str(e)[: len(message)] != message:
+            print(e)
+            raise
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if config["use_amplitude"]:
