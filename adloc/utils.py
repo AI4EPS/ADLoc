@@ -113,6 +113,13 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     ## Location using RANSAC
     num_picks = len(X)
+    if num_picks < max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)):
+        picks["mask"] = 0
+        picks["residual_time"] = 0.0
+        if config["use_amplitude"]:
+            picks["residual_amplitude"] = 0.0
+        return picks, None
+
     reg = RANSACRegressor(
         estimator=estimator,
         random_state=0,
@@ -132,7 +139,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         message = "RANSAC could not find a valid consensus set."
         if str(e)[: len(message)] != message:
             print(e)
-            raise
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if config["use_amplitude"]:
