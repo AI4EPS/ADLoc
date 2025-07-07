@@ -27,7 +27,7 @@ def convert_dd(
     pairs,
     picks_by_event,
     min_obs=8,
-    max_obs=20,
+    max_obs=100,
     i=0,
 ):
 
