@@ -143,7 +143,7 @@ def run_adloc(picks, stations, config_):
     picks["idx_eve"] = config["event_index"]
 
     # %%
-    estimator = ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, eikonal=config["eikonal"])
+    estimator = ADLoc(config, eikonal=config["eikonal"])
 
     # %%
     picks, events = invert_location_iter(picks, stations, config, estimator, events_init=None, iter=0)

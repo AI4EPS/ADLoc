@@ -4,7 +4,7 @@ import scipy
 from sklearn.base import BaseEstimator
 
 from ._ransac import RANSACRegressor
-from .eikonal2d import grad_traveltime, init_eikonal2d, traveltime
+from .eikonal2d import calc_grad_traveltime, calc_traveltime, init_eikonal2d
 from .gmpe import calc_amp, calc_mag
 
 # from sklearn.linear_model import RANSACRegressor
@@ -13,9 +13,12 @@ np.random.seed(0)
 
 
 class ADLoc(BaseEstimator):
-    def __init__(self, config, stations, num_event=1, events=None, eikonal=None):
+    def __init__(self, config, num_event=1, events=None, eikonal=None):
         """
         events: [x, y, z, t]
+        Station locations are not stored on the estimator; they are carried in the
+        forward call via X columns [x_km, y_km, z_km] so that a per-event projection
+        stays consistent between the picks, the initial location and the inversion.
         """
         xlim = config["xlim_km"]
         ylim = config["ylim_km"]
@@ -27,7 +30,6 @@ class ADLoc(BaseEstimator):
             if eikonal is None:
                 print(f"Using default velocity: {vel}")
         self.config = config
-        self.stations = stations
         self.vel = vel
 
         self.num_event = num_event
@@ -48,19 +50,21 @@ class ADLoc(BaseEstimator):
             self.use_amplitude = False
 
     @staticmethod
-    def l2_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None, reduce_loss=False):
+    def l2_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, eikonal=None, reduce_loss=False):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight, x_km, y_km, z_km]
+        Station locations are carried in X[:, 3:6] so they follow the (per-event) projection.
         """
         station_index = X[:, 0].astype(int)
         phase_type = X[:, 1].astype(int)
         phase_weight = X[:, 2]
+        station_loc = X[:, 3:6]
 
         if eikonal is None:
             v = np.array([vel[t] for t in phase_type])
-            tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
+            tt = np.linalg.norm(event[:3] - station_loc, axis=-1) / v + event[3]
         else:
-            tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
+            tt = calc_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal) + event[3]
 
         if reduce_loss:
             loss = 0.5 * np.sum((tt - y) ** 2 * phase_weight)
@@ -70,12 +74,12 @@ class ADLoc(BaseEstimator):
         J = np.ones((len(X), 4))
         if eikonal is None:
             J[:, :3] = (
-                (event[:3] - stations[station_index, :3])
-                / np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1, keepdims=True)
+                (event[:3] - station_loc)
+                / np.linalg.norm(event[:3] - station_loc, axis=-1, keepdims=True)
                 / v[:, np.newaxis]
             )
         else:
-            grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
+            grad = calc_grad_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal)
             J[:, :3] = grad
 
         if reduce_loss:
@@ -86,17 +90,18 @@ class ADLoc(BaseEstimator):
         return loss, J
 
     @staticmethod
-    def huber_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None, sigma=1.0):
+    def huber_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, eikonal=None, sigma=1.0):
 
         station_index = X[:, 0].astype(int)
         phase_type = X[:, 1].astype(int)
         phase_weight = X[:, 2]
+        station_loc = X[:, 3:6]
 
         if eikonal is None:
             v = np.array([vel[t] for t in phase_type])
-            tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
+            tt = np.linalg.norm(event[:3] - station_loc, axis=-1) / v + event[3]
         else:
-            tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
+            tt = calc_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal) + event[3]
 
         t_diff = tt - y
         l1 = np.squeeze((np.abs(t_diff) > sigma))
@@ -109,12 +114,12 @@ class ADLoc(BaseEstimator):
         J = np.ones((len(X), 4))
         if eikonal is None:
             J[:, :3] = (
-                (event[:3] - stations[station_index, :3])
-                / np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1, keepdims=True)
+                (event[:3] - station_loc)
+                / np.linalg.norm(event[:3] - station_loc, axis=-1, keepdims=True)
                 / v[:, np.newaxis]
             )
         else:
-            grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
+            grad = calc_grad_traveltime(event[np.newaxis, :3], station_loc, phase_type, eikonal)
             J[:, :3] = grad
 
         J = np.sum(
@@ -137,7 +142,7 @@ class ADLoc(BaseEstimator):
             x0=self.events[event_index],
             method="L-BFGS-B",
             jac=True,
-            args=(X, yt, self.vel, self.stations, self.eikonal),
+            args=(X, yt, self.vel, self.eikonal),
             # bounds=[
             #     (self.config["xlim_km"][0], self.config["xlim_km"][1]),
             #     (self.config["ylim_km"][0], self.config["ylim_km"][1]),
@@ -153,8 +158,9 @@ class ADLoc(BaseEstimator):
         if self.use_amplitude:
             station_index = X[:, 0].astype(int)
             phase_weight = X[:, 2:3]
+            station_loc = X[:, 3:6]
             self.magnitudes[event_index] = calc_mag(
-                ya[:, np.newaxis], self.events[event_index, :3], self.stations[station_index, :3], phase_weight
+                ya[:, np.newaxis], self.events[event_index, :3], station_loc, phase_weight
             )
 
         return self
@@ -170,7 +176,7 @@ class ADLoc(BaseEstimator):
     #     event0 = self.events[event_index]
     #     delta = np.inf
     #     for i in range(max_iter):
-    #         loss, grad = self.l2_loss_grad(event0, X, yt, self.vel, self.stations, self.eikonal)
+    #         loss, grad = self.l2_loss_grad(event0, X, yt, self.vel, self.eikonal)
     #         A, b = grad, loss
     #         dx = scipy.sparse.linalg.lsqr(A, b, damp=damp)[0]
     #         self.events[event_index] -= dx
@@ -180,36 +186,37 @@ class ADLoc(BaseEstimator):
     #             break
 
     #     if self.use_amplitude:
-    #         station_index = X[:, 0].astype(int)
     #         phase_weight = X[:, 2:3]
+    #         station_loc = X[:, 3:6]
     #         self.magnitudes[event_index] = calc_mag(
-    #             ya[:, np.newaxis], self.events[event_index, :3], self.stations[station_index, :3], phase_weight
+    #             ya[:, np.newaxis], self.events[event_index, :3], station_loc, phase_weight
     #         )
 
     #     return self
 
     def predict(self, X, event_index=0):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight, x_km, y_km, z_km]
         """
         station_index = X[:, 0].astype(int)
         phase_type = X[:, 1].astype(int)
+        station_loc = X[:, 3:6]
 
         if self.eikonal is None:
             v = np.array([self.vel[t] for t in phase_type])
             tt = (
-                np.linalg.norm(self.events[event_index, :3] - self.stations[station_index, :3], axis=-1) / v
+                np.linalg.norm(self.events[event_index, :3] - station_loc, axis=-1) / v
                 + self.events[event_index, 3]
             )
         else:
             tt = (
-                traveltime(event_index, station_index, phase_type, self.events, self.stations, self.eikonal)
+                calc_traveltime(self.events[event_index][np.newaxis, :3], station_loc, phase_type, self.eikonal)
                 + self.events[event_index, 3]
             )
 
         if self.use_amplitude:
             amp = calc_amp(
-                self.magnitudes[event_index], self.events[event_index, :3], self.stations[station_index, :3]
+                self.magnitudes[event_index], self.events[event_index, :3], station_loc
             ).squeeze()
             return np.array([tt, amp]).T
         else:
@@ -217,16 +224,17 @@ class ADLoc(BaseEstimator):
 
     def weight(self, X, event_index=0):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight, x_km, y_km, z_km]
         """
         station_index = X[:, 0].astype(int)
         phase_type = X[:, 1].astype(int)
+        station_loc = X[:, 3:6]
 
         if self.eikonal is None:
             v = np.array([self.vel[t] for t in phase_type])
-            tt = np.linalg.norm(self.events[event_index, :3] - self.stations[station_index, :3], axis=-1) / v
+            tt = np.linalg.norm(self.events[event_index, :3] - station_loc, axis=-1) / v
         else:
-            tt = traveltime(event_index, station_index, phase_type, self.events, self.stations, self.eikonal)
+            tt = calc_traveltime(self.events[event_index][np.newaxis, :3], station_loc, phase_type, self.eikonal)
 
         return np.array([tt]).T
 
@@ -562,21 +570,20 @@ if __name__ == "__main__":
     estimator = ADLoc(
         config,
         # events=events[["x_km", "y_km", "z_km", "event_time"]].values + np.random.rand(num_event, 4) * 10,
-        stations=stations[["x_km", "y_km", "z_km"]].values,
         num_event=num_event,
         eikonal=eikonal_config,
     )
-    output = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
+    output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, event_index=event_index)
     tt_init = output[:, 0]
     amp_init = output[:, 1]
-    estimator.score(X[["idx_sta", "type"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
 
     print(f"Init event loc: {estimator.events[event_index].round(3)}")
 
     # %%
-    estimator.fit(X[["idx_sta", "type", "score", "amp"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
-    estimator.score(X[["idx_sta", "type"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
-    output = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
+    estimator.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
+    output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, event_index=event_index)
     tt = output[:, 0]
     amp = output[:, 1]
     print("Basic:")
@@ -605,24 +612,23 @@ if __name__ == "__main__":
     fig.savefig(f"{data_path}/picks_xt_{event_index}_adloc.png")
 
     # %%
+    # RANSAC locates a single event, so drive it with a one-event estimator (slot 0).
     reg = RANSACRegressor(
-        estimator=ADLoc(
-            config, stations=stations[["x_km", "y_km", "z_km"]].values, num_event=num_event, eikonal=eikonal_config
-        ),
+        estimator=ADLoc(config, num_event=1, eikonal=eikonal_config),
         random_state=0,
         min_samples=4,
         residual_threshold=[1.0, 0.5],
     )
-    reg.fit(X[["idx_sta", "type", "score", "amp"]].values, X[["t_s", "amp"]].values, event_index=event_index)
+    reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
     mask_invt = reg.inlier_mask_
     estimator = reg.estimator_
-    estimator.score(X[["idx_sta", "type"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
-    output = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, y=X[["t_s", "amp"]].values)
+    output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
     tt = output[:, 0]
     amp = output[:, 1]
     print("RANSAC:")
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values.astype(float).round(3)}")
-    print(f"Invt event loc: {estimator.events[event_index].round(3)}")
+    print(f"Invt event loc: {estimator.events[0].round(3)}")
 
     # %% add random picks
     config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
@@ -680,24 +686,23 @@ if __name__ == "__main__":
     plt.savefig(f"{data_path}/picks_xt_{event_index}_noise.png")
 
     # %%
+    # RANSAC locates a single event, so drive it with a one-event estimator (slot 0).
     reg = RANSACRegressor(
-        estimator=ADLoc(
-            config, stations=stations[["x_km", "y_km", "z_km"]].values, num_event=num_event, eikonal=eikonal_config
-        ),
+        estimator=ADLoc(config, num_event=1, eikonal=eikonal_config),
         random_state=0,
         min_samples=4,
         residual_threshold=[1.0, 0.5],
     )
-    reg.fit(X[["idx_sta", "type", "score", "amp"]].values, X[["t_s", "amp"]].values, event_index=event_index)
+    reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
     mask_invt = reg.inlier_mask_
     estimator = reg.estimator_
-    estimator.score(X[["idx_sta", "type"]].values, y=X[["t_s", "amp"]].values, event_index=event_index)
-    output = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, y=X[["t_s", "amp"]].values)
+    output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
     tt = output[:, 0]
     amp = output[:, 1]
     print("RANSAC with noise picks:")
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values.astype(float).round(3)}")
-    print(f"Invt event loc: {estimator.events[event_index].round(3)}")
+    print(f"Invt event loc: {estimator.events[0].round(3)}")
 
     # %%
     fig, ax = plt.subplots(2, 2, figsize=(8, 8), squeeze=False)
@@ -719,7 +724,7 @@ if __name__ == "__main__":
     ax[0, 1].scatter(np.log10(X["dist_km"][mask_invt]), amp[mask_invt], c="g", s=50, marker="x", label="Invert")
 
     X["dist_km"] = X[["x_km", "y_km", "z_km"]].apply(
-        lambda x: np.linalg.norm(x - estimator.events[event_index, :3]), axis=1
+        lambda x: np.linalg.norm(x - estimator.events[0, :3]), axis=1
     )
     colors = lambda x: "r" if x == 0 else "b"
     ax[1, 0].scatter(X["dist_km"], X["t_s"], c=X["type"].apply(colors), s=30, marker="o", label="Picks")

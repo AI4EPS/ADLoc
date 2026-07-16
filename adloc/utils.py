@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from pyproj import Proj
 
 from ._ransac import RANSACRegressor
 
@@ -57,10 +58,22 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     if config["use_amplitude"] and ("station_term_amplitude" not in stations.columns):
         stations["station_term_amplitude"] = 0.0
 
+
+    stations_ = stations[stations["station_id"].isin(picks["station_id"].unique())].copy()
+    if "proj" not in config or config["proj"] is None:
+        lat0 = stations_["latitude"].mean()
+        lon0 = stations_["longitude"].mean()
+        proj = Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0}  +units=km")
+    else:
+        proj = config["proj"]
+    x_km, y_km = proj(stations_["longitude"].values, stations_["latitude"].values)
+    stations_["x_km"] = x_km
+    stations_["y_km"] = y_km
+
     if config["use_amplitude"]:
         X = picks.merge(
             # stations[["x_km", "y_km", "z_km", "station_id", "station_term_time", "station_term_amplitude"]],
-            stations[
+            stations_[
                 [
                     "x_km",
                     "y_km",
@@ -76,7 +89,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     else:
         X = picks.merge(
             # stations[["x_km", "y_km", "z_km", "station_id", "station_term_time"]],
-            stations[
+            stations_[
                 ["x_km", "y_km", "z_km", "station_id", "station_term_time_p", "station_term_time_s"]
             ],  ## Separate P and S station term
             on="station_id",
@@ -131,9 +144,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     )
     try:
         if config["use_amplitude"]:
-            reg.fit(X[["idx_sta", "type", "score", "amp"]].values, X[["t_s", "amp"]].values)
+            reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
         else:
-            reg.fit(X[["idx_sta", "type", "score"]].values, X[["t_s"]].values)
+            reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s"]].values)
     except Exception as e:
         # print(f"No valid model for event_index {event_index}.")
         message = "RANSAC could not find a valid consensus set."
@@ -149,7 +162,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     inlier_mask = reg.inlier_mask_
 
     ## Predict travel time
-    output = estimator.predict(X[["idx_sta", "type"]].values)
+    output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
     if config["use_amplitude"]:
         tt = output[:, 0]
         amp = output[:, 1]
@@ -157,10 +170,13 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         tt = output[:, 0]
     if config["use_amplitude"]:
         score = estimator.score(
-            X[["idx_sta", "type", "score", "amp"]].values[inlier_mask], y=X[["t_s", "amp"]].values[inlier_mask]
+            X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask],
+            y=X[["t_s", "amp"]].values[inlier_mask],
         )
     else:
-        score = estimator.score(X[["idx_sta", "type", "score"]].values[inlier_mask], y=X[["t_s"]].values[inlier_mask])
+        score = estimator.score(
+            X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask], y=X[["t_s"]].values[inlier_mask]
+        )
 
     if (np.sum(inlier_mask) > MIN_PICKS) and (score > config["min_score"]):
         mean_residual_time = np.sum(np.abs(X["t_s"].values - tt) * inlier_mask) / np.sum(inlier_mask)
@@ -172,11 +188,16 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         if config["use_amplitude"]:
             mag = estimator.magnitudes[0]
 
+        longitude, latitude = proj(x, y, inverse=True)
+
         event = {
             "idx_eve": event_index,  ## inside adloc, idx_eve is used which starts from 0 to N events
             "x_km": x,
             "y_km": y,
             "z_km": z,
+            "longitude": longitude,
+            "latitude": latitude,
+            "depth_km": z,
             "time": t0 + pd.Timedelta(t, unit="s"),
             "adloc_score": score,
             "adloc_residual_time": mean_residual_time,
@@ -234,6 +255,7 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
         NCPU = config["ncpu"]
     else:
         NCPU = min(64, mp.cpu_count() * 2 - 1)
+    print(f"Using {NCPU} CPUs for ADLoc inversion.")
 
     jobs = []
     num_events = len(picks["idx_eve"].unique())

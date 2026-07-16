@@ -244,6 +244,47 @@ def calc_traveltime(event_locs, station_locs, phase_type, eikonal):
     return tt
 
 
+def calc_grad_traveltime(event_loc, station_loc, phase_type, eikonal):
+    """
+    Gradient of the eikonal traveltime w.r.t. event location, computed directly from coordinates.
+    event_loc: (num_event, 3) or (1, 3) array of event locations
+    station_loc: (num_station, 3) array of station locations
+    phase_type: (num_station,) array of phase type (0 for P, 1 for S)
+    eikonal: dictionary of the eikonal timetable
+    """
+    x = event_loc[:, 0] - station_loc[:, 0]
+    y = event_loc[:, 1] - station_loc[:, 1]
+    z = event_loc[:, 2] - station_loc[:, 2]
+    r = np.sqrt(x**2 + y**2)
+
+    rgrid0 = eikonal["rgrid"][0]
+    zgrid0 = eikonal["zgrid"][0]
+    nr = eikonal["nr"]
+    nz = eikonal["nz"]
+    h = eikonal["h"]
+
+    if isinstance(phase_type, list):
+        phase_type = np.array(phase_type)
+
+    dt_dr = np.zeros(len(phase_type))
+    dt_dz = np.zeros(len(phase_type))
+
+    p_index = phase_type == 0
+    s_index = phase_type == 1
+
+    dt_dr[p_index] = _interp(eikonal["grad_up"][0], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
+    dt_dr[s_index] = _interp(eikonal["grad_us"][0], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
+    dt_dz[p_index] = _interp(eikonal["grad_up"][1], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
+    dt_dz[s_index] = _interp(eikonal["grad_us"][1], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
+
+    dt_dx = dt_dr * x / (r + 1e-6)
+    dt_dy = dt_dr * y / (r + 1e-6)
+
+    grad = np.column_stack((dt_dx, dt_dy, dt_dz))
+
+    return grad
+
+
 # def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
 def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):
 

@@ -15,70 +15,70 @@ def plotting(stations, figure_path, config, picks, events_old, locations, statio
     fig, ax = plt.subplots(2, 2, figsize=(10, 8), gridspec_kw={"height_ratios": [2, 1]})
     # fig, ax = plt.subplots(2, 3, figsize=(15, 8), gridspec_kw={"height_ratios": [2, 1]})
     im = ax[0, 0].scatter(
-        locations["x_km"],
-        locations["y_km"],
-        c=locations["z_km"],
+        locations["longitude"],
+        locations["latitude"],
+        c=locations["depth_km"],
         cmap="viridis_r",
         s=1,
         marker="o",
         vmin=vmin,
         vmax=vmax,
     )
-    ax[0, 0].set_xlim([xmin, xmax])
-    ax[0, 0].set_ylim([ymin, ymax])
+    # ax[0, 0].set_xlim([xmin, xmax])
+    # ax[0, 0].set_ylim([ymin, ymax])
     cbar = fig.colorbar(im, ax=ax[0, 0])
     cbar.set_label("Depth (km)")
     ax[0, 0].set_title(f"ADLoc: {len(locations)} events")
 
     im = ax[0, 1].scatter(
-        stations["x_km"],
-        stations["y_km"],
+        stations["longitude"],
+        stations["latitude"],
         c=stations["station_term"],
         cmap="viridis_r",
         s=100,
         marker="^",
         alpha=0.5,
     )
-    ax[0, 1].set_xlim([xmin, xmax])
-    ax[0, 1].set_ylim([ymin, ymax])
+    # ax[0, 1].set_xlim([xmin, xmax])
+    # ax[0, 1].set_ylim([ymin, ymax])
     cbar = fig.colorbar(im, ax=ax[0, 1])
     cbar.set_label("Residual (s)")
     ax[0, 1].set_title(f"Station term: {np.mean(np.abs(stations['station_term'].values)):.4f} s")
 
     im = ax[1, 0].scatter(
-        locations["x_km"],
-        locations["z_km"],
-        c=locations["z_km"],
+        locations["longitude"],
+        locations["depth_km"],
+        c=locations["depth_km"],
         cmap="viridis_r",
         s=1,
         marker="o",
         vmin=vmin,
         vmax=vmax,
     )
-    ax[1, 0].set_xlim([xmin, xmax])
+    # ax[1, 0].set_xlim([xmin, xmax])
     ax[1, 0].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[1, 0])
     cbar.set_label("Depth (km)")
 
     im = ax[1, 1].scatter(
-        locations["y_km"],
-        locations["z_km"],
-        c=locations["z_km"],
+        locations["latitude"],
+        locations["depth_km"],
+        c=locations["depth_km"],
         cmap="viridis_r",
         s=1,
         marker="o",
         vmin=vmin,
         vmax=vmax,
     )
-    ax[1, 1].set_xlim([ymin, ymax])
+    # ax[1, 1].set_xlim([ymin, ymax])
     ax[1, 1].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[1, 1])
     cbar.set_label("Depth (km)")
 
     # if ("sigma_x" in locations.columns) and ("sigma_y" in locations.columns) and ("sigma_z" in locations.columns):
     #     ax[0, 0].errorbar(
-    #         locations["x_km"],
-    #         locations["y_km"],
+    #         locations["longitude"],
+    #         locations["latitude"],
     #         xerr=locations["sigma_x"],
     #         yerr=locations["sigma_y"],
     #         fmt=".",
@@ -87,8 +87,8 @@ def plotting(stations, figure_path, config, picks, events_old, locations, statio
     #         markersize=0.1,
     #     )
     #     ax[1, 0].errorbar(
-    #         locations["x_km"],
-    #         locations["z_km"],
+    #         locations["longitude"],
+    #         locations["depth_km"],
     #         xerr=locations["sigma_x"],
     #         yerr=locations["sigma_z"],
     #         fmt=".",
@@ -97,8 +97,8 @@ def plotting(stations, figure_path, config, picks, events_old, locations, statio
     #         markersize=0.1,
     #     )
     #     ax[1, 1].errorbar(
-    #         locations["y_km"],
-    #         locations["z_km"],
+    #         locations["latitude"],
+    #         locations["depth_km"],
     #         xerr=locations["sigma_y"],
     #         yerr=locations["sigma_z"],
     #         fmt=".",
@@ -124,9 +124,9 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
 
     fig, ax = plt.subplots(3, 2, figsize=(10, 10), gridspec_kw={"height_ratios": [2, 1, 1]})
     im = ax[0, 0].scatter(
-        events_old["x_km"],
-        events_old["y_km"],
-        c=events_old["z_km"],
+        events_old["longitude"],
+        events_old["latitude"],
+        c=events_old["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -135,16 +135,16 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[0, 0].set_xlim([xmin, xmax])
-    ax[0, 0].set_ylim([ymin, ymax])
+    # ax[0, 0].set_xlim([xmin, xmax])
+    # ax[0, 0].set_ylim([ymin, ymax])
     cbar = fig.colorbar(im, ax=ax[0, 0])
     cbar.set_label("Depth (km)")
     ax[0, 0].set_title(f"ADLoc: {len(events_old)} events")
 
     im = ax[0, 1].scatter(
-        events["x_km"],
-        events["y_km"],
-        c=events["z_km"],
+        events["longitude"],
+        events["latitude"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -153,16 +153,16 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[0, 1].set_xlim([xmin, xmax])
-    ax[0, 1].set_ylim([ymin, ymax])
+    # ax[0, 1].set_xlim([xmin, xmax])
+    # ax[0, 1].set_ylim([ymin, ymax])
     cbar = fig.colorbar(im, ax=ax[0, 1])
     cbar.set_label("Depth (km)")
     ax[0, 1].set_title(f"ADLoc DD: {len(events)} events")
 
     # im = ax[1, 0].scatter(
-    #     events_new["x_km"],
-    #     events_new["z_km"],
-    #     c=events_new["z_km"],
+    #     events_new["longitude"],
+    #     events_new["depth_km"],
+    #     c=events_new["depth_km"],
     #     cmap="viridis_r",
     #     s=1,
     #     marker="o",
@@ -175,9 +175,9 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
     # cbar.set_label("Depth (km)")
 
     im = ax[1, 0].scatter(
-        events_old["x_km"],
-        events_old["z_km"],
-        c=events_old["z_km"],
+        events_old["longitude"],
+        events_old["depth_km"],
+        c=events_old["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -186,15 +186,15 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[1, 0].set_xlim([xmin, xmax])
+    # ax[1, 0].set_xlim([xmin, xmax])
     ax[1, 0].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[1, 0])
     cbar.set_label("Depth (km)")
 
     im = ax[1, 1].scatter(
-        events["x_km"],
-        events["z_km"],
-        c=events["z_km"],
+        events["longitude"],
+        events["depth_km"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -203,15 +203,15 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[1, 1].set_xlim([xmin, xmax])
+    # ax[1, 1].set_xlim([xmin, xmax])
     ax[1, 1].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[1, 1])
     cbar.set_label("Depth (km)")
 
     im = ax[2, 0].scatter(
-        events_old["y_km"],
-        events_old["z_km"],
-        c=events_old["z_km"],
+        events_old["latitude"],
+        events_old["depth_km"],
+        c=events_old["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -220,15 +220,15 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[2, 0].set_xlim([ymin, ymax])
+    # ax[2, 0].set_xlim([ymin, ymax])
     ax[2, 0].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[2, 0])
     cbar.set_label("Depth (km)")
 
     im = ax[2, 1].scatter(
-        events["y_km"],
-        events["z_km"],
-        c=events["z_km"],
+        events["latitude"],
+        events["depth_km"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -237,7 +237,7 @@ def plotting_dd(events, stations, config, figure_path, events_old, suffix=""):
         alpha=alpha,
         linewidth=0.0,
     )
-    ax[2, 1].set_xlim([ymin, ymax])
+    # ax[2, 1].set_xlim([ymin, ymax])
     ax[2, 1].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[2, 1])
     cbar.set_label("Depth (km)")
@@ -275,9 +275,9 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
     fig, ax = plt.subplots(2, 3, figsize=(18, 8), gridspec_kw={"height_ratios": [2, 1]})
     # fig, ax = plt.subplots(2, 3, figsize=(15, 8), gridspec_kw={"height_ratios": [2, 1]})
     im = ax[0, 0].scatter(
-        events["x_km"],
-        events["y_km"],
-        c=events["z_km"],
+        events["longitude"],
+        events["latitude"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -288,17 +288,17 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
     )
     # set ratio 1:1
     ax[0, 0].set_aspect("equal", "box")
-    ax[0, 0].set_xlim([xmin, xmax])
-    ax[0, 0].set_ylim([ymin, ymax])
-    ax[0, 0].set_xlabel("X (km)")
-    ax[0, 0].set_ylabel("Y (km)")
+    # ax[0, 0].set_xlim([xmin, xmax])
+    # ax[0, 0].set_ylim([ymin, ymax])
+    # ax[0, 0].set_xlabel("X (km)")
+    # ax[0, 0].set_ylabel("Y (km)")
     cbar = fig.colorbar(im, ax=ax[0, 0])
     cbar.set_label("Depth (km)")
     ax[0, 0].set_title(f"ADLoc: {len(events)} events")
 
     im = ax[0, 1].scatter(
-        stations["x_km"],
-        stations["y_km"],
+        stations["longitude"],
+        stations["latitude"],
         c=stations["station_term_time_p"],
         cmap="viridis_r",
         s=100,
@@ -306,17 +306,17 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
         alpha=alpha,
     )
     ax[0, 1].set_aspect("equal", "box")
-    ax[0, 1].set_xlim([xmin, xmax])
-    ax[0, 1].set_ylim([ymin, ymax])
-    ax[0, 1].set_xlabel("X (km)")
-    ax[0, 1].set_ylabel("Y (km)")
+    # ax[0, 1].set_xlim([xmin, xmax])
+    # ax[0, 1].set_ylim([ymin, ymax])
+    # ax[0, 1].set_xlabel("X (km)")
+    # ax[0, 1].set_ylabel("Y (km)")
     cbar = fig.colorbar(im, ax=ax[0, 1])
     cbar.set_label("Residual (s)")
     ax[0, 1].set_title(f"Station term: {np.mean(np.abs(stations['station_term_time_p'].values)):.4f} s")
 
     im = ax[0, 2].scatter(
-        stations["x_km"],
-        stations["y_km"],
+        stations["longitude"],
+        stations["latitude"],
         c=stations["station_term_amplitude"],
         cmap="viridis_r",
         s=100,
@@ -324,18 +324,18 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
         alpha=alpha,
     )
     ax[0, 2].set_aspect("equal", "box")
-    ax[0, 2].set_xlim([xmin, xmax])
-    ax[0, 2].set_ylim([ymin, ymax])
-    ax[0, 2].set_xlabel("X (km)")
-    ax[0, 2].set_ylabel("Y (km)")
+    # ax[0, 2].set_xlim([xmin, xmax])
+    # ax[0, 2].set_ylim([ymin, ymax])
+    # ax[0, 2].set_xlabel("X (km)")
+    # ax[0, 2].set_ylabel("Y (km)")
     cbar = fig.colorbar(im, ax=ax[0, 2])
     cbar.set_label("Residual (log10 cm/s)")
     ax[0, 2].set_title(f"Station term: {np.mean(np.abs(stations['station_term_amplitude'].values)):.4f} s")
 
     ## Separate P and S station term
     # im = ax[0, 1].scatter(
-    #     stations["x_km"],
-    #     stations["y_km"],
+    #     stations["longitude"],
+    #     stations["latitude"],
     #     c=stations["station_term_p"],
     #     cmap="viridis_r",
     #     s=100,
@@ -349,8 +349,8 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
     # ax[0, 1].set_title(f"Station term (P): {np.mean(np.abs(stations['station_term_p'].values)):.4f} s")
 
     # im = ax[0, 2].scatter(
-    #     stations["x_km"],
-    #     stations["y_km"],
+    #     stations["longitude"],
+    #     stations["latitude"],
     #     c=stations["station_term_s"],
     #     cmap="viridis_r",
     #     s=100,
@@ -364,9 +364,9 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
     # ax[0, 2].set_title(f"Station term (S): {np.mean(np.abs(stations['station_term_s'].values)):.4f} s")
 
     im = ax[1, 0].scatter(
-        events["x_km"],
-        events["z_km"],
-        c=events["z_km"],
+        events["longitude"],
+        events["depth_km"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -376,17 +376,17 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
         linewidth=0.0,
     )
     # ax[1, 0].set_aspect("equal", "box")
-    ax[1, 0].set_xlim([xmin, xmax])
+    # ax[1, 0].set_xlim([xmin, xmax])
     ax[1, 0].set_ylim([zmax, zmin])
-    ax[1, 0].set_xlabel("X (km)")
+    # ax[1, 0].set_xlabel("X (km)")
     # ax[1, 0].set_ylabel("Depth (km)")
     cbar = fig.colorbar(im, ax=ax[1, 0])
     cbar.set_label("Depth (km)")
 
     im = ax[1, 1].scatter(
-        events["y_km"],
-        events["z_km"],
-        c=events["z_km"],
+        events["latitude"],
+        events["depth_km"],
+        c=events["depth_km"],
         cmap="viridis_r",
         s=s,
         marker="o",
@@ -396,9 +396,9 @@ def plotting_ransac(stations, figure_path, config, picks, events_init, events, s
         linewidth=0.0,
     )
     # ax[1, 1].set_aspect("equal", "box")
-    ax[1, 1].set_xlim([ymin, ymax])
+    # ax[1, 1].set_xlim([ymin, ymax])
     ax[1, 1].set_ylim([zmax, zmin])
-    ax[1, 1].set_xlabel("Y (km)")
+    # ax[1, 1].set_xlabel("Y (km)")
     # ax[1, 1].set_ylabel("Depth (km)")
     cbar = fig.colorbar(im, ax=ax[1, 1])
     cbar.set_label("Depth (km)")
