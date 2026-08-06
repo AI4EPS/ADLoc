@@ -264,17 +264,16 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
     pbar = tqdm(total=num_events, desc=f"Iter {iter}")
     with mp.get_context("spawn").Pool(NCPU) as pool:
         for idx_eve, picks_by_event in picks.groupby("idx_eve"):
-            if events_init is not None:
+            if config.get("proj") is None or events_init is None:
+                event_init = None
+            else:
                 event_init = events_init[events_init["idx_eve"] == idx_eve]
                 if len(event_init) == 0:
                     event_init = None
-                elif len(event_init) == 1:
-                    event_init = event_init[["x_km", "y_km", "z_km", "time"]].values[0]
                 else:
+                    if len(event_init) > 1:
+                        print(f"Multiple initial locations for event_index {idx_eve}.")
                     event_init = event_init[["x_km", "y_km", "z_km", "time"]].values[0]
-                    print(f"Multiple initial locations for event_index {idx_eve}.")
-            else:
-                event_init = None
 
             # picks_, event_ = invert(picks_by_event, stations, config, estimator, idx_eve, event_init)
             # if event_ is not None:
