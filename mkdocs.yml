@@ -9,3 +9,8 @@ nav:
 
 theme:
   name: "material"
+
+extra:
+  analytics:
+    provider: google
+    property: G-NS39WCB4RS
