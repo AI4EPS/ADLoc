@@ -1,8 +1,7 @@
 name: pypi
 on:
-  push:
-    branches:
-      - main
+  release:
+    types: [published]
   # workflow_dispatch:
   #   inputs:
   #     version:
