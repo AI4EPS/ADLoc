@@ -1,0 +1,11 @@
+site_name: "ADLoc"
+site_author: "Weiqiang Zhu"
+docs_dir: docs/
+repo_name: "AI4EPS/ADLoc"
+repo_url: "https://github.com/AI4EPS/ADLoc"
+
+nav:
+    - Overview: README.md
+
+theme:
+  name: "material"
