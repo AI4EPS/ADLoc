@@ -217,6 +217,7 @@ if __name__ == "__main__":
         "xlim_km": config["xlim_km"],
         "ylim_km": config["ylim_km"],
         "zlim_km": config["zlim_km"],
+        "station_z_km": stations["z_km"].values,
     }
     config["eikonal"] = init_eikonal2d(config["eikonal"])
 
@@ -239,7 +240,7 @@ if __name__ == "__main__":
         (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
         (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
         # (config["zlim_km"][0], config["zlim_km"][1] + 1),  # z
-        (0, config["zlim_km"][1] + 1),
+        (config["zlim_km"][0], config["zlim_km"][1] + 1),  # mindepth < 0 lets events rise above sea level
         (None, None),  # t
     )
 

@@ -98,13 +98,12 @@ def set_config(region="ridgecrest"):
         "ylim_km": ylim_km,
         "zlim_km": zlim_km,
     }
-    eikonal = init_eikonal2d(eikonal)
-    config["eikonal"] = eikonal
+    config["eikonal"] = eikonal  # tables built per request in run_adloc, from the stations' depths
 
     config["bfgs_bounds"] = (
         (xlim_km[0] - 1, xlim_km[1] + 1),  # x
         (ylim_km[0] - 1, ylim_km[1] + 1),  # y
-        (0, zlim_km[1] + 1),  # z
+        (zlim_km[0], zlim_km[1] + 1),  # z; mindepth_km < 0 lets events rise above sea level
         (None, None),  # t
     )
 
@@ -129,6 +128,7 @@ def run_adloc(picks, stations, config_):
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
     stations["z_km"] = stations["elevation_m"].apply(lambda x: -x / 1e3)
+    eikonal = init_eikonal2d({**config["eikonal"], "station_z_km": stations["z_km"].values})
 
     # %%
     mapping_phase_type_int = {"P": 0, "S": 1}
@@ -143,7 +143,7 @@ def run_adloc(picks, stations, config_):
     picks["idx_eve"] = config["event_index"]
 
     # %%
-    estimator = ADLoc(config, eikonal=config["eikonal"])
+    estimator = ADLoc(config, eikonal=eikonal)
 
     # %%
     picks, events = invert_location_iter(picks, stations, config, estimator, events_init=None, iter=0)

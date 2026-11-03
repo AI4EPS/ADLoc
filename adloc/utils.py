@@ -25,7 +25,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         if not (n0 >= config["min_p_picks"] and n1 >= config["min_s_picks"]):
             return False
 
-        if estimator.events[0][2] < 1.0:  # depth > 1.0 km
+        if estimator.events[0][2] < config["zlim_km"][0]:  # above the allowed depths (zlim_km[0] < 0 above sea level)
             return False
 
         if estimator.score(X, y) < config["min_score"]:
