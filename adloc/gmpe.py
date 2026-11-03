@@ -26,6 +26,10 @@ def calc_mag(amp, event_loc, station_loc, weight, min=-2, max=8):
     # mag = np.sum(mag_ * weight) / (np.sum(weight)+1e-6)
     # (Watanabe, 1971) https://www.jstage.jst.go.jp/article/zisin1948/24/3/24_3_189/_pdf/-char/ja
     # mag_ = 1.0/0.85 * (data + 1.73 * np.log10(np.maximum(dist, 0.1)) + 2.50)
+    ok = np.isfinite(mag_)  # picks without an amplitude (NaN) do not count
+    if not ok.any():
+        return np.nan
+    mag_, weight = mag_[ok], weight[ok]
     mu = np.sum(mag_ * weight) / (np.sum(weight) + 1e-6)
     std = np.sqrt(np.sum((mag_ - mu) ** 2 * weight) / (np.sum(weight) + 1e-12))
     mask = np.abs(mag_ - mu) <= 2 * std

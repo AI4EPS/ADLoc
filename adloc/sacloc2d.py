@@ -41,11 +41,10 @@ class ADLoc(BaseEstimator):
             self.events = np.array(
                 [[(xlim[0] + xlim[1]) / 2, (ylim[0] + ylim[1]) / 2, (zlim[0] + zlim[1]) / 2, 0]] * num_event
             )
-        if ("use_amplitude" in config) and (config["use_amplitude"]):
-            self.use_amplitude = True
-            self.magnitudes = np.ones(num_event) * -999.0
-        else:
-            self.use_amplitude = False
+        # the magnitude is estimated whenever y carries amplitudes; use_amplitude also scores events by them
+        self.use_amplitude = config.get("use_amplitude", False)
+        self.magnitudes = np.ones(num_event) * -999.0
+        self.has_amplitude = False
 
     @staticmethod
     def l2_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, eikonal=None, reduce_loss=False):
@@ -128,11 +127,8 @@ class ADLoc(BaseEstimator):
 
     def fit(self, X, y=None, event_index=0):
 
-        if self.use_amplitude:
-            yt = y[:, 0]  # time
-            ya = y[:, 1]  # amplitude
-        else:
-            yt = y[:, 0]
+        self.has_amplitude = y.shape[1] > 1  # columns: time[, amplitude]
+        yt = y[:, 0]
 
         opt = scipy.optimize.minimize(
             self.huber_loss_grad,
@@ -153,12 +149,12 @@ class ADLoc(BaseEstimator):
         self.events[event_index, :] = opt.x
         self.is_fitted_ = True
 
-        if self.use_amplitude:
+        if self.has_amplitude:
             station_index = X[:, 0].astype(int)
             phase_weight = X[:, 2:3]
             station_loc = X[:, 3:6]
             self.magnitudes[event_index] = calc_mag(
-                ya[:, np.newaxis], self.events[event_index, :3], station_loc, phase_weight
+                y[:, 1:2], self.events[event_index, :3], station_loc, phase_weight
             )
 
         return self
@@ -212,7 +208,7 @@ class ADLoc(BaseEstimator):
                 + self.events[event_index, 3]
             )
 
-        if self.use_amplitude:
+        if self.has_amplitude:
             amp = calc_amp(
                 self.magnitudes[event_index], self.events[event_index, :3], station_loc
             ).squeeze()
@@ -244,13 +240,14 @@ class ADLoc(BaseEstimator):
             return -np.inf
 
         output = self.predict(X, event_index)
-        if self.use_amplitude:
+        if self.use_amplitude and self.has_amplitude:
             tt = output[:, 0]
             amp = output[:, 1]
             yt = y[:, 0]
-            ya = y[:, 1]
+            ok = np.isfinite(y[:, 1]) & np.isfinite(amp)  # picks with an amplitude
+            ya, amp = y[ok, 1], amp[ok]
             R2_t = 1 - np.sum((yt - tt) ** 2) / (np.sum((y[:, 0] - np.mean(y[:, 0])) ** 2) + 1e-6)
-            R2_a = 1 - np.sum((ya - amp) ** 2) / (np.sum((y[:, 1] - np.mean(y[:, 1])) ** 2) + 1e-6)
+            R2_a = 1 - np.sum((ya - amp) ** 2) / (np.sum((ya - np.mean(ya)) ** 2) + 1e-6) if ok.sum() > 1 else R2_t
             # weight = X[:, 2]
             # mu_yt = np.average(yt, weights=weight)
             # mu_ya = np.average(ya, weights=weight)
@@ -258,9 +255,9 @@ class ADLoc(BaseEstimator):
             # R2_a = 1 - np.sum(weight * (ya - amp) ** 2) / (np.sum(weight * (ya - mu_ya) ** 2) + 1e-6)
             R2 = (R2_t + R2_a) / 2
         else:
-            tt = output
-            yt = y
-            R2 = 1 - np.sum((yt - tt) ** 2) / (np.sum((y - np.mean(y)) ** 2) + 1e-6)
+            tt = output[:, 0]  # time only, even when y also carries amplitudes
+            yt = y[:, 0]
+            R2 = 1 - np.sum((yt - tt) ** 2) / (np.sum((yt - np.mean(yt)) ** 2) + 1e-6)
             # weight = X[:, 2]
             # mu_y = np.average(yt, weights=weight)
             # R2 = 1 - np.sum(weight * (yt - tt) ** 2) / (np.sum(weight * (yt - mu_y) ** 2) + 1e-6)

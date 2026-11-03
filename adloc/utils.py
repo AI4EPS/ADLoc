@@ -46,8 +46,11 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     MIN_PICKS = config["min_picks"]
     MIN_PICKS_RATIO = config["min_picks_ratio"]
-    if config["use_amplitude"]:
-        MAX_RESIDUAL = [config["max_residual_time"], config["max_residual_amplitude"]]
+    # amplitudes, when present, give the magnitude; use_amplitude also lets them reject picks (here) and events (score)
+    has_amp = "phase_amplitude" in picks.columns
+    if has_amp:
+        max_amp = config["max_residual_amplitude"] if config.get("use_amplitude", False) else np.inf
+        MAX_RESIDUAL = [config["max_residual_time"], max_amp]
     else:
         MAX_RESIDUAL = config["max_residual_time"]
 
@@ -55,7 +58,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         stations["station_term_time_p"] = 0.0
     if "station_term_time_s" not in stations.columns:
         stations["station_term_time_s"] = 0.0
-    if config["use_amplitude"] and ("station_term_amplitude" not in stations.columns):
+    if has_amp and ("station_term_amplitude" not in stations.columns):
         stations["station_term_amplitude"] = 0.0
 
 
@@ -70,7 +73,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     stations_["x_km"] = x_km
     stations_["y_km"] = y_km
 
-    if config["use_amplitude"]:
+    if has_amp:
         X = picks.merge(
             # stations[["x_km", "y_km", "z_km", "station_id", "station_term_time", "station_term_amplitude"]],
             stations_[
@@ -111,14 +114,14 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         lambda x: x["station_term_time_p"] if x["type"] == 0 else x["station_term_time_s"], axis=1
     )  ## Separate P and S station term
     X["t_s"] = X["t_s"] - X["station_term_time"]
-    if config["use_amplitude"]:
+    if has_amp:
         X.rename(columns={"phase_amplitude": "amp"}, inplace=True)
         X["amp"] = X["amp"] - X["station_term_amplitude"]
 
     estimator.set_params(**{"events": event_init})
 
     # ## Location using ADLoc
-    # if config["use_amplitude"]:
+    # if has_amp:
     #     estimator.fit(X[["idx_sta", "type", "score", "amp"]].values, y=X[["t_s", "amp"]].values)
     # else:
     #     estimator.fit(X[["idx_sta", "type", "score"]].values, y=X[["t_s"]].values)
@@ -129,7 +132,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     if num_picks < max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)):
         picks["mask"] = 0
         picks["residual_time"] = 0.0
-        if config["use_amplitude"]:
+        if has_amp:
             picks["residual_amplitude"] = 0.0
         return picks, None
 
@@ -143,7 +146,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         is_data_valid=is_data_valid,
     )
     try:
-        if config["use_amplitude"]:
+        if has_amp:
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
         else:
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s"]].values)
@@ -154,7 +157,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             print(e)
         picks["mask"] = 0
         picks["residual_time"] = 0.0
-        if config["use_amplitude"]:
+        if has_amp:
             picks["residual_amplitude"] = 0.0
         return picks, None
 
@@ -163,12 +166,12 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     ## Predict travel time
     output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
-    if config["use_amplitude"]:
+    if has_amp:
         tt = output[:, 0]
         amp = output[:, 1]
     else:
         tt = output[:, 0]
-    if config["use_amplitude"]:
+    if has_amp:
         score = estimator.score(
             X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask],
             y=X[["t_s", "amp"]].values[inlier_mask],
@@ -180,12 +183,12 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     if (np.sum(inlier_mask) > MIN_PICKS) and (score > config["min_score"]):
         mean_residual_time = np.sum(np.abs(X["t_s"].values - tt) * inlier_mask) / np.sum(inlier_mask)
-        if config["use_amplitude"]:
-            mean_residual_amp = np.sum(np.abs(X["amp"].values - amp) * inlier_mask) / np.sum(inlier_mask)
+        if has_amp:
+            mean_residual_amp = np.nanmean(np.abs(X["amp"].values - amp)[inlier_mask])  # over picks with an amplitude
         else:
             mean_residual_amp = 0.0
         x, y, z, t = estimator.events[0]
-        if config["use_amplitude"]:
+        if has_amp:
             mag = estimator.magnitudes[0]
 
         longitude, latitude = proj(x, y, inverse=True)
@@ -203,7 +206,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "adloc_residual_time": mean_residual_time,
             "num_picks": np.sum(inlier_mask),
         }
-        if config["use_amplitude"]:
+        if has_amp:
             event["magnitude"] = mag
             event["adloc_residual_amplitude"] = mean_residual_amp
         event = pd.DataFrame([event])
@@ -212,7 +215,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         event = None
 
     picks["residual_time"] = X["t_s"].values - tt
-    if config["use_amplitude"]:
+    if has_amp:
         picks["residual_amplitude"] = X["amp"].values - amp
     else:
         picks["residual_amplitude"] = 0.0
