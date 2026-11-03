@@ -111,44 +111,35 @@ def traveltime(event_index, station_index, phase_type, events, stations, eikonal
 
 
 @njit
-def _lookup(tt, grad, iph, itab, dx, dy, z, zgrid0, h):
+def _lookup(tt, iph, itab, dx, dy, z, zgrid0, h):
     """Travel time and its gradient w.r.t. the event (x, y, z) from the tables [phase iph, station depth itab], for
-    events at horizontal offsets dx, dy from the station and absolute depth z.
+    events at horizontal offsets dx, dy from the station and absolute depth z. The time is the bilinear interpolation
+    of the table and the gradient its exact derivative, so an optimizer's line search sees a consistent pair.
 
-    Outside the grid (r > rmax, z above the top or below the bottom), q_c is the nearest point on the edge and
-        T(q) = T(q_c) + grad T(q_c) . (q - q_c),   grad T(q) = grad T(q_c).
-    The time is continuous across the edge and its gradient is the one at the edge, never zero, so an event pushed
-    outside is pulled back by the data. Beyond rmax this is a head wave with the edge's apparent velocity; below the
-    bottom and above the top, the edge's velocity extends outward."""
+    Outside the grid (r > rmax, z above the top or below the bottom) the edge cell's bilinear form continues: the cell
+    index stops at the edge, the fraction does not. The time stays continuous, its gradient is still its exact
+    derivative and never zero, so an event pushed outside is pulled back by the data."""
     n = dx.shape[0]
     nr, nz = tt.shape[2], tt.shape[3]
-    rmax, zmax = (nr - 1) * h, zgrid0 + (nz - 1) * h
     t = np.empty(n)
     g = np.empty((n, 3))
     for k in range(n):
         p, m = iph[k], itab[k]
         r = np.sqrt(dx[k] ** 2 + dy[k] ** 2)
-        rc = min(r, rmax)
-        zc = min(max(z[k], zgrid0), zmax)
-        x = rc / h
-        y = (zc - zgrid0) / h
-        i = min(int(x), nr - 2)
-        j = min(int(y), nz - 2)
-        fx = x - i
-        fy = y - j
-        w00, w10, w01, w11 = (1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy
-        tq, gr, gz = 0.0, 0.0, 0.0
-        for a, b, w in ((i, j, w00), (i + 1, j, w10), (i, j + 1, w01), (i + 1, j + 1, w11)):
-            tq += w * tt[p, m, a, b]
-            gr += w * grad[p, m, 0, a, b]
-            gz += w * grad[p, m, 1, a, b]
-        t[k] = tq + gr * (r - rc) + gz * (z[k] - zc)
-        cx, cy = 0.0, 0.0  # dT/dr vanishes on the axis
+        x, y = r / h, (z[k] - zgrid0) / h
+        i = min(max(int(np.floor(x)), 0), nr - 2)
+        j = min(max(int(np.floor(y)), 0), nz - 2)
+        fx, fy = x - i, y - j
+        t00, t10, t01, t11 = tt[p, m, i, j], tt[p, m, i + 1, j], tt[p, m, i, j + 1], tt[p, m, i + 1, j + 1]
+        c = t11 - t10 - t01 + t00
+        t[k] = t00 + (t10 - t00) * fx + (t01 - t00) * fy + c * fx * fy
+        gr = ((t10 - t00) + c * fy) / h
+        cx, cy = 0.0, 0.0
         if r > 1e-9:
             cx, cy = dx[k] / r, dy[k] / r
         g[k, 0] = gr * cx
         g[k, 1] = gr * cy
-        g[k, 2] = gz
+        g[k, 2] = ((t01 - t00) + c * fx) / h
     return t, g
 
 
@@ -161,7 +152,7 @@ def traveltime_grad(dx, dy, z, z_sta, phase_type, eikonal):
     itab = np.searchsorted((z_tab[1:] + z_tab[:-1]) / 2, z_sta)  # the nearest table by depth (robust to float32 depths)
     if np.any(np.abs(z_tab[itab] - z_sta) > DZ_STA / 2 + 1e-4):
         raise ValueError("a station depth has no eikonal table: pass every station's depth in config['station_z_km']")
-    return _lookup(eikonal["tt"], eikonal["grad_tt"], vec(phase_type, np.int64), itab,
+    return _lookup(eikonal["tt"], vec(phase_type, np.int64), itab,
                    vec(dx, float), vec(dy, float), vec(z, float), eikonal["zgrid"][0], eikonal["h"])
 
 
@@ -207,9 +198,8 @@ def grad_traveltime(event_index, station_index, phase_type, events, stations, ei
 
 
 def station_table(zz, vel, z_sta, rgrid, zgrid, h):
-    """Travel time T (s) of a station at r = 0 and depth z_sta (km) on the shared absolute (r, z) grid, and its
-    gradients along r and z. As in ADTomo, the 4 nodes around the station start from the straight-ray time by
-    Simpson's rule. Unlike ADTomo they are not frozen: a sharp contrast inside the station's cell can open a faster path
+    """Travel time T (s) of a station at r = 0 and depth z_sta (km) on the shared absolute (r, z) grid. As in ADTomo,
+    the 4 nodes around the station start from the straight-ray time by Simpson's rule. Unlike ADTomo they are not frozen: a sharp contrast inside the station's cell can open a faster path
     to one (then the swept value is closer to the truth); a station exactly on a node also lets the first-order update
     0 + h * s lower its axial neighbour slightly (0.2 ms in a gradient model)."""
     f = np.tile(1.0 / np.interp(zgrid, zz, vel), (len(rgrid), 1))
@@ -221,9 +211,7 @@ def station_table(zz, vel, z_sta, rgrid, zgrid, h):
     for i in (0, 1):
         for j in (j0, j0 + 1):
             u[i, j] = np.hypot(rgrid[i], zgrid[j] - z_sta) / 6.0 * (s_sta + 4.0 * s_mid + f[i, j])
-    u = eikonal_solve(u, 1.0 / f, h, verbose=False)
-    grad = np.stack(np.gradient(np.concatenate([u[2:0:-1], u]), h, edge_order=2))[:, 2:]  # mirrored at r = 0
-    return u, grad
+    return eikonal_solve(u, 1.0 / f, h, verbose=False)
 
 
 def init_eikonal2d(config):
@@ -253,8 +241,7 @@ def init_eikonal2d(config):
         tables = [list(pool.map(lambda z: station_table(zz, np.array(vel[ph], dtype=float), z, rgrid, zgrid, h), z_sta))
                   for ph in ("P", "S")]
     out = {"station_z": z_sta, "rgrid": rgrid, "zgrid": zgrid, "nr": len(rgrid), "nz": len(zgrid), "h": h,
-           "tt": np.array([[t[0] for t in ts] for ts in tables], dtype=np.float32),  # (phase, table, nr, nz)
-           "grad_tt": np.array([[t[1] for t in ts] for ts in tables], dtype=np.float32)}  # (phase, table, 2, nr, nz)
+           "tt": np.array(tables, dtype=np.float32)}  # (phase, table, nr, nz)
     print(f"Eikonal: {len(z_sta)} station tables of {len(rgrid)} x {len(zgrid)} nodes in {time.time() - t0:.1f} s")
     config.update(out)
 
@@ -319,7 +306,7 @@ if __name__ == "__main__":
         plt.colorbar()
         plt.savefig(f"{data_path}/slice_t{ph}_2d.png")
 
-        g = config["grad_tt"][p, 0]
+        g = np.gradient(config["tt"][p, 0], config["h"])
         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         for a, panel, title in zip(ax, g, ["r", "z"]):
             fig.colorbar(a.pcolormesh(panel), ax=a)
@@ -350,9 +337,9 @@ if __name__ == "__main__":
     q = np.vstack([ev[:300], [[rmax + 3, 0, 10], [0, rmax + 5, 5], [20, 5, ztop - 2], [10, 10, zbot + 4], [rmax + 2, 0, zbot + 2]]])
     pq = np.zeros(len(q), int)
     g = calc_grad_traveltime(q, st, pq, eik)
-    fd = np.column_stack([(calc_traveltime(q + 1e-4 * d, st, pq, eik).astype(float) - calc_traveltime(q - 1e-4 * d, st, pq, eik).astype(float)) / 2e-4 for d in np.eye(3)])
-    print(f"gradient vs finite differences: p95 {np.percentile(np.linalg.norm(g - fd, axis=1), 95):.4f} s/km")
-    assert np.percentile(np.linalg.norm(g - fd, axis=1), 95) < 0.01 and np.all(np.linalg.norm(g[-5:], axis=1) > 0.05)
+    fd = np.column_stack([(_eval(q + 1e-6 * d, st, pq, eik)[0] - _eval(q - 1e-6 * d, st, pq, eik)[0]) / 2e-6 for d in np.eye(3)])  # float64 times
+    print(f"gradient vs finite differences: p95 {np.percentile(np.linalg.norm(g - fd, axis=1), 95):.1e} s/km")
+    assert np.percentile(np.linalg.norm(g - fd, axis=1), 95) < 1e-5 and np.all(np.linalg.norm(g[-5:], axis=1) > 0.05)
 
     # continuous across the edges; a station depth without a table raises
     for a, b in [([rmax - 1e-3, 0, 10], [rmax + 1e-3, 0, 10]), ([5, 5, ztop + 1e-3], [5, 5, ztop - 1e-3]), ([5, 5, zbot - 1e-3], [5, 5, zbot + 1e-3])]:

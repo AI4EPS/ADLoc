@@ -134,8 +134,8 @@ def eikonal_solve(u, v, h, verbose=True):
 ###################################### Traveltime based on Eikonal Timetable ######################################
 def station_table(f, grid0, h, sta):
     """Travel time T (s) of a station at sta = (x, y, z) (km) on the grid of first node grid0 and step h, with slowness
-    f (nx, ny, nz), and its gradient (3, nx, ny, nz). As in ADTomo, the 8 nodes around the station start from the
-    straight-ray time by Simpson's rule; as in eikonal2d.station_table, they are not frozen."""
+    f (nx, ny, nz). As in ADTomo, the 8 nodes around the station start from the straight-ray time by Simpson's rule;
+    as in eikonal2d.station_table, they are not frozen."""
     shape = np.array(f.shape)
     p = (np.asarray(sta, dtype=float) - grid0) / h  # fractional grid coordinates
     c0 = np.clip(np.floor(p).astype(int), 0, shape - 2)  # the station's cell, inside the grid (as in ADTomo)
@@ -146,8 +146,7 @@ def station_table(f, grid0, h, sta):
     s_sta, s_mid = w @ fc, fc.mean()
     u = np.full(f.shape, 1000.0)
     u[tuple(corners.T)] = np.linalg.norm((corners - p) * h, axis=1) / 6.0 * (s_sta + 4.0 * s_mid + fc)
-    u = eikonal_solve(u, 1.0 / f, h, verbose=False)
-    return u, np.stack(np.gradient(u, h, edge_order=2))
+    return eikonal_solve(u, 1.0 / f, h, verbose=False)
 
 
 def init_eikonal3d(config, stations):
@@ -181,46 +180,40 @@ def init_eikonal3d(config, stations):
                   for f in [np.ascontiguousarray(1.0 / v, dtype=float) for v in (vp, vs)]]
     print(f"Eikonal: {len(sta)} station tables of {shape[0]} x {shape[1]} x {shape[2]} nodes in {time.time() - t0:.1f} s")
     return {"station_loc": sta, "grid0": grid0, "shape": shape, "h": h,
-            "tt": np.array([[t[0] for t in ts] for ts in tables], dtype=np.float32),  # (phase, station, nx, ny, nz)
-            "grad_tt": np.array([[t[1] for t in ts] for ts in tables], dtype=np.float32)}  # (phase, station, 3, ...)
+            "tt": np.array(tables, dtype=np.float32)}  # (phase, station, nx, ny, nz)
 
 
 @njit
-def _lookup(tt, grad, iph, ista, q, grid0, h):
-    """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista].
-
-    Outside the grid, q_c is the nearest point on the edge and
-        T(q) = T(q_c) + grad T(q_c) . (q - q_c),   grad T(q) = grad T(q_c),
-    as in eikonal2d._lookup: the time is continuous across the edge and its gradient never zero.
+def _lookup(tt, iph, ista, q, grid0, h):
+    """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista]: the
+    trilinear interpolation of the table and its exact derivative. Outside the grid the edge cell's trilinear form
+    continues, as in eikonal2d._lookup: the time stays continuous and its gradient is its exact derivative, never zero.
     """
     n = q.shape[0]
-    nn = np.array(tt.shape[2:])
+    nx, ny, nz = tt.shape[2], tt.shape[3], tt.shape[4]
     t = np.empty(n)
     g = np.empty((n, 3))
     for k in range(n):
         p, m = iph[k], ista[k]
-        qc = np.empty(3)
-        i0 = np.empty(3, np.int64)
-        fr = np.empty(3)
-        for d in range(3):
-            qc[d] = min(max(q[k, d], grid0[d]), grid0[d] + (nn[d] - 1) * h)
-            x = (qc[d] - grid0[d]) / h
-            i0[d] = min(int(x), nn[d] - 2)
-            fr[d] = x - i0[d]
-        tq = 0.0
-        gq = np.zeros(3)
+        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h
+        i = min(max(int(np.floor(x)), 0), nx - 2)
+        j = min(max(int(np.floor(y)), 0), ny - 2)
+        l = min(max(int(np.floor(z)), 0), nz - 2)
+        fx, fy, fz = x - i, y - j, z - l
+        tk, gx, gy, gz = 0.0, 0.0, 0.0, 0.0
         for a in range(2):
+            wx, sx = (fx, 1.0) if a else (1.0 - fx, -1.0)  # weight and its derivative along x
             for b in range(2):
+                wy, sy = (fy, 1.0) if b else (1.0 - fy, -1.0)
                 for c in range(2):
-                    w = (fr[0] if a else 1 - fr[0]) * (fr[1] if b else 1 - fr[1]) * (fr[2] if c else 1 - fr[2])
-                    i, j, l = i0[0] + a, i0[1] + b, i0[2] + c
-                    tq += w * tt[p, m, i, j, l]
-                    for d in range(3):
-                        gq[d] += w * grad[p, m, d, i, j, l]
-        for d in range(3):
-            tq += gq[d] * (q[k, d] - qc[d])
-            g[k, d] = gq[d]
-        t[k] = tq
+                    wz, sz = (fz, 1.0) if c else (1.0 - fz, -1.0)
+                    v = tt[p, m, i + a, j + b, l + c]
+                    tk += wx * wy * wz * v
+                    gx += sx * wy * wz * v
+                    gy += wx * sy * wz * v
+                    gz += wx * wy * sz * v
+        t[k] = tk
+        g[k, 0], g[k, 1], g[k, 2] = gx / h, gy / h, gz / h
     return t, g
 
 
@@ -230,7 +223,7 @@ def _eval(event_index, station_index, phase_type, events, eikonal):
     n = len(ista)
     q = np.ascontiguousarray(np.asarray(events, dtype=float)[np.broadcast_to(np.asarray(event_index), (n,))][:, :3])
     iph = np.broadcast_to(np.asarray(phase_type), (n,)).astype(np.int64)  # 0 (P) or 1 (S)
-    return _lookup(eikonal["tt"], eikonal["grad_tt"], iph, ista, q, eikonal["grid0"], eikonal["h"])
+    return _lookup(eikonal["tt"], iph, ista, q, eikonal["grid0"], eikonal["h"])
 
 
 def traveltime(event_index, station_index, phase_type, events, stations, eikonal):
@@ -289,7 +282,8 @@ if __name__ == "__main__":
     # slices through the station's nearest node of the table and of its gradient
     sta_ix, sta_iy, sta_iz = np.round((station_loc[0] - eikonal["grid0"]) / h).astype(int)
     for p, ph in enumerate(("p", "s")):
-        T, gT = eikonal["tt"][p, 0], eikonal["grad_tt"][p, 0]
+        T = eikonal["tt"][p, 0]
+        gT = np.gradient(T, h)
         for name, A in ((f"t{ph}", [T[sta_ix, :, :], T[:, sta_iy, :], T[:, :, sta_iz]]),
                         (f"grad_t{ph}", [gT[0][sta_ix, :, :], gT[1][sta_ix, :, :], gT[2][sta_ix, :, :]])):
             fig, ax = plt.subplots(1, 3, figsize=(15, 5))

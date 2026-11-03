@@ -13,8 +13,8 @@ from tqdm import tqdm
 np.random.seed(111)
 
 # %%
-# result_path = "results"
 result_path = "test_data/synthetic"
+random_station_term = False  # True: a station term uniform in [-0.5, 0.5] s at each station
 if not os.path.exists(result_path):
     os.makedirs(result_path)
 
@@ -87,8 +87,7 @@ for i in range(num_station):
     longitude = lon0 + (np.random.rand() - 0.5) * 1
     elevation_m = np.random.rand() * 1000
     depth_km = -elevation_m / 1000
-    # station_term = np.random.rand() - 0.5
-    station_term = 0.0
+    station_term = np.random.rand() - 0.5 if random_station_term else 0.0
     stations.append([station_id, latitude, longitude, elevation_m, depth_km, station_term])
 
 stations = pd.DataFrame(

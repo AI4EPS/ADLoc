@@ -190,8 +190,10 @@ if __name__ == "__main__":
         xmin, ymin = proj(config["minlongitude"], config["minlatitude"])
         xmax, ymax = proj(config["maxlongitude"], config["maxlatitude"])
         zmin, zmax = config["mindepth"], config["maxdepth"]
-        config["xlim_km"] = (xmin, xmax)
-        config["ylim_km"] = (ymin, ymax)
+        # each event is located in its own frame centred on its stations (config["proj"] = None below), so the
+        # limits are a local range around those stations: the region's size by default, or e.g. [-500, 500] km
+        config["xlim_km"] = (-(xmax - xmin) / 2, (xmax - xmin) / 2)
+        config["ylim_km"] = (-(ymax - ymin) / 2, (ymax - ymin) / 2)
         config["zlim_km"] = (zmin, zmax)
 
     config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
@@ -236,10 +238,9 @@ if __name__ == "__main__":
     config["min_s_picks"] = 1.5
     config["min_p_picks"] = 1.5
 
-    config["bfgs_bounds"] = (
+    config["bfgs_bounds"] = (  # x, y in each event's own frame (local limits above)
         (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
         (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
-        # (config["zlim_km"][0], config["zlim_km"][1] + 1),  # z
         (config["zlim_km"][0], config["zlim_km"][1] + 1),  # mindepth < 0 lets events rise above sea level
         (None, None),  # t
     )

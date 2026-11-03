@@ -96,9 +96,7 @@ if __name__ == "__main__":
     if ("xlim_km" not in config) or ("ylim_km" not in config) or ("zlim_km" not in config):
         xmin, ymin = proj(config["minlongitude"], config["minlatitude"])
         xmax, ymax = proj(config["maxlongitude"], config["maxlatitude"])
-        zmin = stations["z_km"].min()
-        zmax = 20
-        config = {}
+        zmin, zmax = config["mindepth"], config["maxdepth"]  # as in run_adloc.py; mindepth < 0 allows events above sea level
         config["xlim_km"] = (xmin, xmax)
         config["ylim_km"] = (ymin, ymax)
         config["zlim_km"] = (zmin, zmax)

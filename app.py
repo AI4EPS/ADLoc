@@ -8,7 +8,7 @@ import adloc
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from adloc.eikonal2d import init_eikonal2d
+from adloc.eikonal2d import DZ_STA, init_eikonal2d
 from adloc.sacloc2d import ADLoc
 from adloc.utils import invert_location, invert_location_iter
 from fastapi import FastAPI
@@ -112,14 +112,25 @@ def set_config(region="ridgecrest"):
     return config
 
 
-config = set_config()
+CONFIG = set_config()
+TABLES = {}  # eikonal tables by station depths and grid, reused across requests (the last 8)
+
+
+def eikonal_tables(eikonal, station_z_km):
+    key = (tuple(np.unique(np.round(np.asarray(station_z_km) / DZ_STA))), eikonal["h"],
+           tuple(eikonal["xlim_km"]), tuple(eikonal["ylim_km"]), tuple(eikonal["zlim_km"]))
+    if key not in TABLES:
+        if len(TABLES) >= 8:
+            TABLES.pop(next(iter(TABLES)))
+        TABLES[key] = init_eikonal2d({**eikonal, "station_z_km": station_z_km})
+    return TABLES[key]
 
 
 # %%
 def run_adloc(picks, stations, config_):
 
     # %%
-    config.update(config_)
+    config = {**CONFIG, **config_}  # per request: client settings never leak into other requests
 
     proj = config["proj"]
 
@@ -128,7 +139,7 @@ def run_adloc(picks, stations, config_):
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
     stations["z_km"] = stations["elevation_m"].apply(lambda x: -x / 1e3)
-    eikonal = init_eikonal2d({**config["eikonal"], "station_z_km": stations["z_km"].values})
+    eikonal = eikonal_tables(config["eikonal"], stations["z_km"].values)
 
     # %%
     mapping_phase_type_int = {"P": 0, "S": 1}
