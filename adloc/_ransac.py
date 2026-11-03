@@ -365,7 +365,7 @@ class RANSACRegressor(
         # check to the estimator's own input validation.
         _raise_for_params(fit_params, self, "fit")
         check_X_params = dict(accept_sparse="csr", ensure_all_finite=False)
-        check_y_params = dict(ensure_2d=False)
+        check_y_params = dict(ensure_2d=False, ensure_all_finite="allow-nan")  # NaN: a pick without an amplitude
         X, y = validate_data(self, X, y, validate_separately=(check_X_params, check_y_params))
         check_consistent_length(X, y)
 
@@ -489,7 +489,7 @@ class RANSACRegressor(
             residuals_subset = loss_function(y, y_pred)
 
             # classify data into inliers and outliers
-            inlier_mask_subset = residuals_subset <= residual_threshold
+            inlier_mask_subset = ~(residuals_subset > residual_threshold)  # a missing (NaN) amplitude never rejects a pick
             inlier_mask_subset = (inlier_mask_subset).all(axis=-1)  ## for time + amplitude
             n_inliers_subset = np.sum(inlier_mask_subset)
 
