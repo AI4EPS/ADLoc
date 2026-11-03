@@ -343,7 +343,6 @@ def main(args):
             "ylim_km": config["ylim_km"],
             "zlim_km": config["zlim_km"],
         }
-        eikonal = init_eikonal2d(config["eikonal"])
 
     # %% JSON format
     # with open(args.stations, "r") as fp:
@@ -376,6 +375,9 @@ def main(args):
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
     events["z_km"] = events["depth_km"]
+    if args.eikonal:
+        config["eikonal"]["station_z_km"] = stations["z_km"].values
+        eikonal = init_eikonal2d(config["eikonal"])
 
     # %%
     stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous

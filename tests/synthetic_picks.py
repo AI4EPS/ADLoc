@@ -60,7 +60,6 @@ config["eikonal"] = {
     "ylim_km": config["ylim_km"],
     "zlim_km": config["zlim_km"],
 }
-config["eikonal"] = init_eikonal2d(config["eikonal"])
 
 # %%
 mapping_phase_type_int = {"P": 0, "S": 1}
@@ -97,6 +96,8 @@ stations[["x_km", "y_km"]] = stations.apply(
 )
 stations["z_km"] = stations["depth_km"]
 stations.to_csv(f"{result_path}/stations.csv", index=False)
+config["eikonal"]["station_z_km"] = stations["z_km"].values
+config["eikonal"] = init_eikonal2d(config["eikonal"])
 
 
 # %%

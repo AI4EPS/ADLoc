@@ -6,5 +6,5 @@ setup(
     long_description="ADLoc",
     long_description_content_type="text/markdown",
     packages=["adloc"],
-    install_requires=["numpy", "h5py", "matplotlib", "pandas", "tqdm", "pyproj", "numba", "scipy"],
+    install_requires=["numpy", "h5py", "matplotlib", "pandas", "tqdm", "pyproj", "numba", "scipy", "scikit-learn"],
 )

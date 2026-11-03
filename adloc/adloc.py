@@ -5,97 +5,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
 
-from .eikonal2d import _interp
+from .eikonal2d import traveltime_grad
 import scipy.sparse
 
 
 class CalcTravelTime(Function):
-    @staticmethod
-    def forward(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h):
-        tt = _interp(timetable, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
-        tt = torch.from_numpy(tt)
-        return tt
+    """Eikonal travel time of one phase for events at horizontal offsets dx, dy from stations at depth z_sta and at
+    absolute depth z; the gradient w.r.t. dx, dy and z comes from the same table lookup."""
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
-        r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h = inputs
-        ctx.save_for_backward(r, z)
-        ctx.timetable = timetable
-        ctx.timetable_grad_r = timetable_grad_r
-        ctx.timetable_grad_z = timetable_grad_z
-        ctx.rgrid0 = rgrid0
-        ctx.zgrid0 = zgrid0
-        ctx.nr = nr
-        ctx.nz = nz
-        ctx.h = h
+    def forward(ctx, dx, dy, z, z_sta, phase_type, eikonal):
+        n = lambda a: a.detach().cpu().numpy()
+        tt, grad = traveltime_grad(n(dx), n(dy), n(z), n(z_sta), phase_type, eikonal)
+        ctx.save_for_backward(torch.from_numpy(grad).to(dx))
+        return torch.from_numpy(tt).to(dx)
 
     @staticmethod
     def backward(ctx, grad_output):
-        timetable_grad_r = ctx.timetable_grad_r
-        timetable_grad_z = ctx.timetable_grad_z
-        rgrid0 = ctx.rgrid0
-        zgrid0 = ctx.zgrid0
-        nr = ctx.nr
-        nz = ctx.nz
-        h = ctx.h
-        r, z = ctx.saved_tensors
-
-        grad_r = _interp(timetable_grad_r, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
-        grad_z = _interp(timetable_grad_z, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
-
-        grad_r = torch.from_numpy(grad_r) * grad_output
-        grad_z = torch.from_numpy(grad_z) * grad_output
-
-        return grad_r, grad_z, None, None, None, None, None, None, None, None
-
-
-# %%
-class Clamp(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input, min, max):
-        return input.clamp(min=min, max=max)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output, None, None
-
-
-def clamp(input, min, max):
-    return Clamp.apply(input, min, max)
-
-
-def interp2d(time_table, x, y, xgrid, ygrid, h):
-    nx = len(xgrid)
-    ny = len(ygrid)
-    assert time_table.shape == (nx, ny)
-
-    with torch.no_grad():
-        ix0 = torch.floor((x - xgrid[0]) / h).clamp(0, nx - 2).long()
-        iy0 = torch.floor((y - ygrid[0]) / h).clamp(0, ny - 2).long()
-        ix1 = ix0 + 1
-        iy1 = iy0 + 1
-
-    # x = (torch.clamp(x, xgrid[0], xgrid[-1]) - xgrid[0]) / h
-    # y = (torch.clamp(y, ygrid[0], ygrid[-1]) - ygrid[0]) / h
-
-    x = (clamp(x, xgrid[0], xgrid[-1]) - xgrid[0]) / h
-    y = (clamp(y, ygrid[0], ygrid[-1]) - ygrid[0]) / h
-
-    ## https://en.wikipedia.org/wiki/Bilinear_interpolation
-
-    Q00 = time_table[ix0, iy0]
-    Q01 = time_table[ix0, iy1]
-    Q10 = time_table[ix1, iy0]
-    Q11 = time_table[ix1, iy1]
-
-    t = (
-        Q00 * (ix1 - x) * (iy1 - y)
-        + Q10 * (x - ix0) * (iy1 - y)
-        + Q01 * (ix1 - x) * (y - iy0)
-        + Q11 * (x - ix0) * (y - iy0)
-    )
-
-    return t
+        (grad,) = ctx.saved_tensors
+        return grad_output * grad[:, 0], grad_output * grad[:, 1], grad_output * grad[:, 2], None, None, None
 
 
 # %%
@@ -162,16 +90,6 @@ class TravelTime(nn.Module):
         self.eikonal = eikonal
         self.zlim = zlim
         self.grad_type = grad_type
-        if self.eikonal is not None:
-            self.timetable_p = torch.tensor(
-                np.reshape(self.eikonal["up"], (self.eikonal["nr"], self.eikonal["nz"])), dtype=dtype
-            )
-            self.timetable_s = torch.tensor(
-                np.reshape(self.eikonal["us"], (self.eikonal["nr"], self.eikonal["nz"])), dtype=dtype
-            )
-            self.rgrid = self.eikonal["rgrid"]
-            self.zgrid = self.eikonal["zgrid"]
-            self.h = self.eikonal["h"]
 
     def calc_time(self, event_loc, station_loc, phase_type):
 
@@ -180,32 +98,9 @@ class TravelTime(nn.Module):
             tt = dist / self.velocity[phase_type]
             tt = tt.float()
         else:
-            # r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 3
             x = event_loc[:, 0] - station_loc[:, 0]
             y = event_loc[:, 1] - station_loc[:, 1]
-            z = event_loc[:, 2] - station_loc[:, 2]
-            r = torch.sqrt(x**2 + y**2)
-
-            timetable = self.eikonal["up"] if phase_type in [0, "P"] else self.eikonal["us"]
-            timetable_grad = self.eikonal["grad_up"] if phase_type in [0, "P"] else self.eikonal["grad_us"]
-            timetable_grad_r = timetable_grad[0]
-            timetable_grad_z = timetable_grad[1]
-            rgrid0 = self.eikonal["rgrid"][0]
-            zgrid0 = self.eikonal["zgrid"][0]
-            nr = self.eikonal["nr"]
-            nz = self.eikonal["nz"]
-            h = self.eikonal["h"]
-            tt = CalcTravelTime.apply(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h)
-
-            # if phase_type in [0, "P"]:
-            #     timetable = self.timetable_p
-            # elif phase_type in [1, "S"]:
-            #     timetable = self.timetable_s
-            # else:
-            #     raise ValueError("phase_type should be 0 or 1. for P and S, respectively.")
-
-            # tt = interp2d(timetable, r, z, self.rgrid, self.zgrid, self.h)
-
+            tt = CalcTravelTime.apply(x, y, event_loc[:, 2], station_loc[:, 2], phase_type, self.eikonal)
             tt = tt.float().unsqueeze(-1)
 
         return tt
@@ -309,32 +204,9 @@ class TravelTimeDD(TravelTime):
             event_loc = event_loc.view(nb1 * ne1, nc1)
             station_loc = station_loc.view(nb1 * ne1, nc2)
 
-            # r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 2 (pair), 3
             x = event_loc[:, 0] - station_loc[:, 0]
             y = event_loc[:, 1] - station_loc[:, 1]
-            z = event_loc[:, 2] - station_loc[:, 2]
-            r = torch.sqrt(x**2 + y**2)
-
-            timetable = self.eikonal["up"] if phase_type in [0, "P"] else self.eikonal["us"]
-            timetable_grad = self.eikonal["grad_up"] if phase_type in [0, "P"] else self.eikonal["grad_us"]
-            timetable_grad_r = timetable_grad[0]
-            timetable_grad_z = timetable_grad[1]
-            rgrid0 = self.eikonal["rgrid"][0]
-            zgrid0 = self.eikonal["zgrid"][0]
-            nr = self.eikonal["nr"]
-            nz = self.eikonal["nz"]
-            h = self.eikonal["h"]
-            tt = CalcTravelTime.apply(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h)
-
-            # if phase_type in [0, "P"]:
-            #     timetable = self.timetable_p
-            # elif phase_type in [1, "S"]:
-            #     timetable = self.timetable_s
-            # else:
-            #     raise ValueError("phase_type should be 0 or 1. for P and S, respectively.")
-
-            # tt = interp2d(timetable, r, z, self.rgrid, self.zgrid, self.h)
-
+            tt = CalcTravelTime.apply(x, y, event_loc[:, 2], station_loc[:, 2], phase_type, self.eikonal)
             tt = tt.float().view(nb1, ne1, 1)
 
         return tt
@@ -390,8 +262,6 @@ class TravelTimeDD(TravelTime):
                 # loss += torch.sum(F.l1_loss(t_, phase_time_, reduction="none") * phase_weight_)
                 # loss += torch.sum(torch.abs(t_ - phase_time_) * phase_weight_)
 
-        if loss == 0.0:
-            return None
         return {"phase_time": pred_time, "loss": loss}
 
 
@@ -406,12 +276,6 @@ def hypodd(pairs, event_loc, event_time, station_loc, config):
     phase_type = pairs["phase_type"].values
     phase_time = pairs["phase_dtime"].values
     phase_weight = pairs["phase_score"].values
-
-    rgrid0 = config["eikonal"]["rgrid"][0]
-    zgrid0 = config["eikonal"]["zgrid"][0]
-    nr = config["eikonal"]["nr"]
-    nz = config["eikonal"]["nz"]
-    h = config["eikonal"]["h"]
 
     max_std = 10.0
     min_std = 3.0
@@ -429,29 +293,20 @@ def hypodd(pairs, event_loc, event_time, station_loc, config):
         event_loc_ = event_loc[event_index]
         event_time_ = event_time[event_index]
 
-        station_loc_ = station_loc_[:, np.newaxis, :]
+        station_loc_ = np.broadcast_to(station_loc_[:, np.newaxis, :], event_loc_.shape)
         x = event_loc_[:, :, 0] - station_loc_[:, :, 0]
         y = event_loc_[:, :, 1] - station_loc_[:, :, 1]
-        z = event_loc_[:, :, 2] - station_loc_[:, :, 2]
-        r = np.sqrt(x**2 + y**2)
 
         tt = np.zeros([len(phase_time), 2])
-        grad_r = np.zeros([len(phase_time), 2])
-        grad_z = np.zeros([len(phase_time), 2])
+        grad = np.zeros([len(phase_time), 2, 3])
 
         for ph in np.unique(phase_type):
-            timetable = config["eikonal"]["up"] if ph in [0, "P"] else config["eikonal"]["us"]
-            timetable_grad = config["eikonal"]["grad_up"] if ph in [0, "P"] else config["eikonal"]["grad_us"]
-            timetable_grad_r = timetable_grad[0]
-            timetable_grad_z = timetable_grad[1]
-
             ii = phase_type == ph
-            tt[ii] = _interp(timetable, r[ii], z[ii], rgrid0, zgrid0, nr, nz, h)
-            grad_r[ii] = _interp(timetable_grad_r, r[ii], z[ii], rgrid0, zgrid0, nr, nz, h)
-            grad_z[ii] = _interp(timetable_grad_z, r[ii], z[ii], rgrid0, zgrid0, nr, nz, h)
+            t_, g_ = traveltime_grad(x[ii].ravel(), y[ii].ravel(), event_loc_[ii, :, 2].ravel(), station_loc_[ii, :, 2].ravel(), ph, config["eikonal"])
+            tt[ii] = t_.reshape(-1, 2)
+            grad[ii] = g_.reshape(-1, 2, 3)
 
-        grad_x = grad_r * x / (r + 1e-6)
-        grad_y = grad_r * y / (r + 1e-6)
+        grad_x, grad_y, grad_z = grad[..., 0], grad[..., 1], grad[..., 2]
         dt = (tt[:, 0] + event_time_[:, 0] - tt[:, 1] - event_time_[:, 1]) - phase_time
 
         idx = np.abs(dt) < np.std(dt[idx]) * std
@@ -512,7 +367,7 @@ if __name__ == "__main__":
 
     import matplotlib.pyplot as plt
     import pandas as pd
-    from eikonal2d import eikonal_solve
+    from .eikonal2d import calc_traveltime, init_eikonal2d  # run as: python -m adloc.adloc
     from torch import optim
 
     ######################################## Create Synthetic Data #########################################
@@ -525,7 +380,7 @@ if __name__ == "__main__":
     nr = int(np.sqrt(nx**2 + ny**2))
     nz = 10
     h = 3.0
-    eikonal_config = {"nr": nr, "nz": nz, "h": h}
+    eikonal_config = {"nx": nx, "ny": ny, "nr": nr, "nz": nz, "h": h}
     with open(f"{data_path}/config.json", "w") as f:
         json.dump(eikonal_config, f)
     xgrid = np.arange(0, nx) * h
@@ -562,28 +417,18 @@ if __name__ == "__main__":
     vp = np.ones((nr, nz)) * 6.0
     vs = vp / vpvs_ratio
 
-    ## eikonal solver
-    up = 1000 * np.ones((nr, nz), dtype=np.float64)
-    us = 1000 * np.ones((nr, nz), dtype=np.float64)
-    ir0 = np.around((0 - rgrid[0]) / h).astype(np.int64)
-    iz0 = np.around((0 - zgrid[0]) / h).astype(np.int64)
-    up[ir0, iz0] = 0.0
-    us[ir0, iz0] = 0.0
-    up = eikonal_solve(up, vp, h)
-    us = eikonal_solve(us, vs, h)
-    up = torch.tensor(up, dtype=torch.float64)
-    us = torch.tensor(us, dtype=torch.float64)
+    ## eikonal solver: one table per station depth
+    vel = {"Z": [0.0, 1.0], "P": [6.0, 6.0], "S": [6.0 / vpvs_ratio] * 2}
+    eikonal = init_eikonal2d({"vel": vel, "h": h, "xlim_km": [xgrid[0], xgrid[-1]], "ylim_km": [ygrid[0], ygrid[-1]],
+                              "zlim_km": [zgrid[0], zgrid[-1]], "station_z_km": stations["z_km"].values})
 
     # %%
     picks = []
     for j, station in stations.iterrows():
         for i, event in events.iterrows():
-            r = np.linalg.norm([event["x_km"] - station["x_km"], event["y_km"] - station["y_km"]])
-            z = event["z_km"] - station["z_km"]
-            r = torch.tensor(r, dtype=torch.float64)
-            z = torch.tensor(z, dtype=torch.float64)
+            ev, st = event[["x_km", "y_km", "z_km"]].values[None].astype(float), station[["x_km", "y_km", "z_km"]].values[None].astype(float)
             if np.random.rand() < 0.5:
-                tt = interp2d(up, r, z, rgrid, zgrid, h).item()
+                tt = calc_traveltime(ev, st, [0], eikonal)[0].item()
                 picks.append(
                     {
                         "event_id": event["event_id"],
@@ -595,7 +440,7 @@ if __name__ == "__main__":
                     }
                 )
             if np.random.rand() < 0.5:
-                tt = interp2d(us, r, z, rgrid, zgrid, h).item()
+                tt = calc_traveltime(ev, st, [1], eikonal)[0].item()
                 picks.append(
                     {
                         "event_id": event["event_id"],
@@ -668,6 +513,7 @@ if __name__ == "__main__":
         pd.to_datetime(picks["phase_time"]) - pd.to_datetime(picks["event_time"])
     ).dt.total_seconds()  # relative to event time (arrival time)
     picks.drop(columns=["event_time"], inplace=True)
+    picks["phase_type"] = picks["phase_type"].map({"P": 0, "S": 1})
     events["event_time_origin"] = events["event_time"].copy()
     events["event_time"] = np.zeros(len(events))  # relative to event time
     ####
@@ -683,18 +529,10 @@ if __name__ == "__main__":
     nr, nz, h = eikonal_config["nr"], eikonal_config["nz"], eikonal_config["h"]
     rgrid = np.arange(0, nr) * h
     zgrid = np.arange(0, nz) * h
-    eikonal_config.update({"rgrid": rgrid, "zgrid": zgrid})
-    vp = np.ones((nr, nz), dtype=np.float64) * 6.0
-    vs = vp / 1.73
-    up = 1000 * np.ones((nr, nz), dtype=np.float64)
-    us = 1000 * np.ones((nr, nz), dtype=np.float64)
-    ir0 = np.around((0 - rgrid[0]) / h).astype(np.int64)
-    iz0 = np.around((0 - zgrid[0]) / h).astype(np.int64)
-    up[ir0, iz0] = 0.0
-    us[ir0, iz0] = 0.0
-    up = eikonal_solve(up, vp, h)
-    us = eikonal_solve(us, vs, h)
-    eikonal_config.update({"up": up, "us": us})
+    xgrid, ygrid = np.arange(eikonal_config["nx"]) * h, np.arange(eikonal_config["ny"]) * h
+    eikonal_config = init_eikonal2d({"vel": {"Z": [0.0, 1.0], "P": [6.0, 6.0], "S": [6.0 / 1.73] * 2}, "h": h,
+                                     "xlim_km": [xgrid[0], xgrid[-1]], "ylim_km": [ygrid[0], ygrid[-1]],
+                                     "zlim_km": [zgrid[0], zgrid[-1]], "station_z_km": stations["z_km"].values})
 
     ## initial event location
     event_loc = (
@@ -756,7 +594,7 @@ if __name__ == "__main__":
         loss.backward()
 
         with torch.no_grad():
-            traveltime.event_loc.weight.data[:, 2].clamp_(min=3.0)
+            traveltime.event_loc.weight.data[:, 2].clamp_(min=zgrid[0], max=zgrid[-1])
 
         return loss
 

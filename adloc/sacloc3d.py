@@ -2,14 +2,14 @@
 import matplotlib
 import numpy as np
 import scipy
-from _ransac import RANSACRegressor
-from eikonal3d import eikonal_solve, grad_traveltime, traveltime
 from sklearn.base import BaseEstimator
+
+from ._ransac import RANSACRegressor
+from .eikonal3d import grad_traveltime, init_eikonal3d, traveltime
 
 # from sklearn.linear_model import RANSACRegressor
 from tqdm import tqdm
 
-np.random.seed(0)
 # matplotlib.use("Agg")
 
 
@@ -28,35 +28,9 @@ class ADLoc(BaseEstimator):
         self.vel = vel
         self.num_event = num_event
 
-        if eikonal is not None:
-            if isinstance(eikonal["up"], str):
-                eikonal["up"] = np.memmap(
-                    eikonal["up"],
-                    dtype="float32",
-                    mode="r",
-                    shape=(len(stations), eikonal["nx"] * eikonal["ny"] * eikonal["nz"]),
-                )
-            if isinstance(eikonal["us"], str):
-                eikonal["us"] = np.memmap(
-                    eikonal["us"],
-                    dtype="float32",
-                    mode="r",
-                    shape=(len(stations), eikonal["nx"] * eikonal["ny"] * eikonal["nz"]),
-                )
-            if isinstance(eikonal["grad_up"], str):
-                eikonal["grad_up"] = np.memmap(
-                    eikonal["grad_up"],
-                    dtype="float32",
-                    mode="r",
-                    shape=(len(stations), 3, eikonal["nx"] * eikonal["ny"] * eikonal["nz"]),
-                )
-            if isinstance(eikonal["grad_us"], str):
-                eikonal["grad_us"] = np.memmap(
-                    eikonal["grad_us"],
-                    dtype="float32",
-                    mode="r",
-                    shape=(len(stations), 3, eikonal["nx"] * eikonal["ny"] * eikonal["nz"]),
-                )
+        if eikonal is not None:  # the tables are built for eikonal["station_loc"]: the station order must match
+            assert np.allclose(np.asarray(stations)[:, :3], eikonal["station_loc"]), "stations differ from the eikonal tables"
+
         self.eikonal = eikonal
 
         if events is not None:
@@ -148,114 +122,6 @@ class ADLoc(BaseEstimator):
         R2 = 1 - np.sum((y - tt) ** 2) / np.sum((y - np.mean(y)) ** 2)
         print(f"{R2=}")
         return R2
-
-
-def init_eikonal3d(config, stations):
-
-    # nr = 21
-    # nz = 21
-    # vel = {"p": 6.0, "s": 6.0 / 1.73}
-
-    xlim = config["xlim_km"]
-    ylim = config["ylim_km"]
-    zlim = config["zlim_km"]
-    # vel = config["vel"]
-    if "vel" in config:
-        vel = config["vel"]
-    else:
-        vel = {"p": 6.0, "s": 6.0 / 1.73}
-    if "h" in config:
-        h = config["h"]
-    else:
-        h = 2.0
-    xgrid = np.arange(xlim[0], xlim[1], h)
-    ygrid = np.arange(ylim[0], ylim[1], h)
-    zgrid = np.arange(zlim[0], zlim[1], h)
-    nx = len(xgrid)
-    ny = len(ygrid)
-    nz = len(zgrid)
-
-    print(f"{nx=}, {ny=}, {nz=}")
-    print(f"{len(stations) = }")
-    vp = np.ones((nx, ny, nz)) * vel["p"]
-    vs = np.ones((nx, ny, nz)) * vel["s"]
-
-    num_station = len(stations)
-    if os.path.exists("up.dat") or os.path.exists("us.dat"):
-        if input("Files up.dat/us.data already exists. Do you want to overwrite? (y/n): ") == "y":
-            up = np.memmap("up.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
-            us = np.memmap("us.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
-            grad_up = np.memmap("grad_up.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
-            grad_us = np.memmap("grad_us.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
-
-            pbar = tqdm(total=num_station)
-            for i, station in stations.iterrows():
-
-                pbar.set_description(f"Station {station['station_id']}")
-
-                up_ = 1000 * np.ones((nx, ny, nz))
-
-                us_ = 1000 * np.ones((nx, ny, nz))
-                # up_[sta_ix, sta_iy, sta_iz] = 0.0
-                # us_[sta_ix, sta_iy, sta_iz] = 0.0
-                up_ = init_u0(xlim, ylim, zlim, station, h, vp, up_)
-                us_ = init_u0(xlim, ylim, zlim, station, h, vs, us_)
-
-                up_ = eikonal_solve(up_, vp, h)
-                grad_up_ = np.gradient(up_, h, edge_order=2)
-                up_ = up_.ravel()
-                grad_up_ = [x.ravel() for x in grad_up_]
-                up[i, :] = up_
-                grad_up[i, :, :] = grad_up_
-
-                # us_ = 1000 * np.ones((nx, ny, nz))
-                # us_[sta_ix, sta_iy, sta_iz] = 0.0
-
-                us_ = eikonal_solve(us_, vs, h)
-                grad_us_ = np.gradient(us_, h, edge_order=2)
-                us_ = us_.ravel()
-                grad_us_ = [x.ravel() for x in grad_us_]
-                us[i, :] = us_
-                grad_us[i, :, :] = grad_us_
-
-                pbar.update(1)
-
-    config = {
-        "up": "up.dat",
-        "us": "us.dat",
-        "grad_up": "grad_up.dat",
-        "grad_us": "grad_us.dat",
-        "xgrid": xgrid,
-        "ygrid": ygrid,
-        "zgrid": zgrid,
-        "nx": nx,
-        "ny": ny,
-        "nz": nz,
-        "h": h,
-    }
-
-    return config
-
-
-def init_u0(xlim, ylim, zlim, station, h, v, u0):
-
-    ix = (station["x_km"] - xlim[0]) / h
-    iy = (station["y_km"] - ylim[0]) / h
-    iz = (station["z_km"] - zlim[0]) / h
-    ix0, ix1 = np.floor(ix).astype(int), np.ceil(ix).astype(int)
-    iy0, iy1 = np.floor(iy).astype(int), np.ceil(iy).astype(int)
-    iz0, iz1 = np.floor(iz).astype(int), np.ceil(iz).astype(int)
-
-    u0[ix0, iy0, iz0] = np.sqrt((ix0 - ix) ** 2 + (iy0 - iy) ** 2 + (iz0 - iz) ** 2) * h / v[ix0, iy0, iz0]
-    u0[ix1, iy0, iz0] = np.sqrt((ix1 - ix) ** 2 + (iy0 - iy) ** 2 + (iz0 - iz) ** 2) * h / v[ix1, iy0, iz0]
-    u0[ix0, iy1, iz0] = np.sqrt((ix0 - ix) ** 2 + (iy1 - iy) ** 2 + (iz0 - iz) ** 2) * h / v[ix0, iy1, iz0]
-    u0[ix0, iy0, iz1] = np.sqrt((ix0 - ix) ** 2 + (iy0 - iy) ** 2 + (iz1 - iz) ** 2) * h / v[ix0, iy0, iz1]
-    u0[ix1, iy1, iz1] = np.sqrt((ix1 - ix) ** 2 + (iy1 - iy) ** 2 + (iz1 - iz) ** 2) * h / v[ix1, iy1, iz1]
-    u0[ix0, iy1, iz1] = np.sqrt((ix0 - ix) ** 2 + (iy1 - iy) ** 2 + (iz1 - iz) ** 2) * h / v[ix0, iy1, iz1]
-    u0[ix1, iy0, iz1] = np.sqrt((ix1 - ix) ** 2 + (iy0 - iy) ** 2 + (iz1 - iz) ** 2) * h / v[ix1, iy0, iz1]
-    u0[ix1, iy1, iz0] = np.sqrt((ix1 - ix) ** 2 + (iy1 - iy) ** 2 + (iz0 - iz) ** 2) * h / v[ix1, iy1, iz0]
-
-    return u0
 
 
 # %%

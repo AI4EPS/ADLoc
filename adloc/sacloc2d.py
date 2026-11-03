@@ -9,8 +9,6 @@ from .gmpe import calc_amp, calc_mag
 
 # from sklearn.linear_model import RANSACRegressor
 
-np.random.seed(0)
-
 
 class ADLoc(BaseEstimator):
     def __init__(self, config, num_event=1, events=None, eikonal=None):
@@ -279,7 +277,7 @@ if __name__ == "__main__":
 
     import matplotlib.pyplot as plt
     import pandas as pd
-    from eikonal2d import _interp, eikonal_solve
+    # run as: python -m adloc.sacloc2d
 
     ######################################## Create Synthetic Data #########################################
     np.random.seed(0)
@@ -342,26 +340,18 @@ if __name__ == "__main__":
     vp = np.ones((nr, nz)) * 6.0
     vs = vp / vpvs_ratio
 
-    ## eikonal solver
-    up = 1000.0 * np.ones((nr, nz), dtype=np.float64)
-    us = 1000.0 * np.ones((nr, nz), dtype=np.float64)
-    ir0 = np.around((0.0 - rgrid[0]) / h).astype(np.int64)
-    iz0 = np.around((0.0 - zgrid[0]) / h).astype(np.int64)
-    up[ir0, iz0] = 0.0
-    us[ir0, iz0] = 0.0
-    up = eikonal_solve(up, vp, h)
-    us = eikonal_solve(us, vs, h)
-    up = up.ravel()
-    us = us.ravel()
+    ## eikonal solver: one table per station depth
+    vel = {"Z": [0.0, 100.0], "P": [6.0, 6.0], "S": [6.0 / vpvs_ratio] * 2}
+    eikonal = init_eikonal2d({"vel": vel, "h": h, "xlim_km": xlim, "ylim_km": ylim, "zlim_km": zlim,
+                              "station_z_km": stations["z_km"].values})
 
     # %%
     picks = []
     for j, station in stations.iterrows():
         for i, event in events.iterrows():
-            r = np.array([np.linalg.norm([event["x_km"] - station["x_km"], event["y_km"] - station["y_km"]])])
-            z = np.array([event["z_km"] - station["z_km"]])
+            ev, st = event[["x_km", "y_km", "z_km"]].values[None].astype(float), station[["x_km", "y_km", "z_km"]].values[None].astype(float)
             if np.random.rand() < 0.5:
-                tt = _interp(up, r, z, rgrid[0], zgrid[0], nr, nz, h)[0]
+                tt = calc_traveltime(ev, st, [0], eikonal)[0].item()
                 picks.append(
                     {
                         "event_id": event["event_id"],
@@ -378,7 +368,7 @@ if __name__ == "__main__":
                     }
                 )
             if np.random.rand() < 0.5:
-                tt = _interp(us, r, z, rgrid[0], zgrid[0], nr, nz, h)[0]
+                tt = calc_traveltime(ev, st, [1], eikonal)[0].item()
                 picks.append(
                     {
                         "event_id": event["event_id"],
@@ -501,6 +491,7 @@ if __name__ == "__main__":
         "S": [6.0 / vpvs_ratio, 6.0 / vpvs_ratio],
     }
     eikonal_config["vel"] = vel
+    eikonal_config["station_z_km"] = stations["z_km"].values
     eikonal_config = init_eikonal2d(eikonal_config)
 
     # %%
