@@ -44,17 +44,18 @@ class ADLoc(BaseEstimator):
     @staticmethod
     def loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight], as in sacloc2d; y: travel times (n,)
         """
-        station_index = X[:, 0]
-        phase_type = X[:, 1]
+        station_index = X[:, 0].astype(int)
+        phase_type = X[:, 1].astype(int)
+        w = X[:, 2]
 
         if eikonal is None:
             v = np.array([vel[t] for t in phase_type])
             tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
         else:
             tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
-        loss = 0.5 * np.sum((tt - y) ** 2)
+        loss = 0.5 * np.sum(w * (tt - y) ** 2)
 
         J = np.ones((len(X), 4))
         if eikonal is None:
@@ -67,17 +68,17 @@ class ADLoc(BaseEstimator):
             grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
             J[:, :3] = grad
 
-        J = np.sum((tt - y)[:, np.newaxis] * J, axis=0)
+        J = np.sum((w * (tt - y))[:, np.newaxis] * J, axis=0)
         return loss, J
 
     def fit(self, X, y=None, event_index=0):
-
+        """X: [station_index, phase_type, phase_weight]; y: travel times (n, 1), as RANSAC passes them."""
         opt = scipy.optimize.minimize(
             self.loss_grad,
             x0=self.events[event_index],
             method="L-BFGS-B",
             jac=True,
-            args=(X, y, self.vel, self.stations, self.eikonal),
+            args=(X, np.asarray(y).reshape(len(X), -1)[:, 0], self.vel, self.stations, self.eikonal),
             bounds=[
                 (self.config["xlim_km"][0], self.config["xlim_km"][1]),
                 (self.config["ylim_km"][0], self.config["ylim_km"][1]),
@@ -93,10 +94,10 @@ class ADLoc(BaseEstimator):
 
     def predict(self, X, event_index=0):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight]; returns travel times (n, 1), as sacloc2d
         """
-        station_index = X[:, 0]
-        type = X[:, 1]
+        station_index = X[:, 0].astype(int)
+        type = X[:, 1].astype(int)
 
         if self.eikonal is None:
             v = np.array([self.vel[t] for t in type])
@@ -110,18 +111,17 @@ class ADLoc(BaseEstimator):
                 + self.events[event_index, 3]
             )
 
-        return tt
+        return tt[:, np.newaxis]
 
     def score(self, X, y=None, event_index=0):
         """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+        X: columns [station_index, phase_type, phase_weight]; y: travel times (n, 1)
         """
         if len(X) == 0:
             return 0
-        tt = self.predict(X, event_index)
-        R2 = 1 - np.sum((y - tt) ** 2) / np.sum((y - np.mean(y)) ** 2)
-        print(f"{R2=}")
-        return R2
+        tt = self.predict(X, event_index)[:, 0]
+        y = np.asarray(y).reshape(len(X), -1)[:, 0]
+        return 1 - np.sum((y - tt) ** 2) / np.sum((y - np.mean(y)) ** 2)
 
 
 # %%
