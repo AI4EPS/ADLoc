@@ -236,10 +236,9 @@ if __name__ == "__main__":
     config["min_s_picks"] = 1.5
     config["min_p_picks"] = 1.5
 
-    config["bfgs_bounds"] = (
-        (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
-        (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
-        # (config["zlim_km"][0], config["zlim_km"][1] + 1),  # z
+    config["bfgs_bounds"] = (  # x, y unbounded: each event has its own projection (config["proj"] = None below)
+        (None, None),  # x
+        (None, None),  # y
         (config["zlim_km"][0], config["zlim_km"][1] + 1),  # mindepth < 0 lets events rise above sea level
         (None, None),  # t
     )
