@@ -9,8 +9,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import torch.optim as optim
-import utils
-from adloc import PhaseDataset
+from adloc.data import PhaseDataset
 from adloc.adloc import TravelTime
 from adloc.eikonal2d import init_eikonal2d, traveltime
 from matplotlib import pyplot as plt
@@ -98,7 +97,7 @@ def get_args_parser(add_help=True):
     return parser.parse_args()
 
 
-def plotting(stations, figure_path, config, picks, events_old, locations, station_term=None, iter=0):
+def plotting(stations, figure_path, config, picks, events_old, locations, station_term=None, suffix=""):
 
     vmin = min(locations["z_km"].min(), events_old["depth_km"].min())
     vmax = max(locations["z_km"].max(), events_old["depth_km"].max())
@@ -172,7 +171,7 @@ def plotting(stations, figure_path, config, picks, events_old, locations, statio
     ax[1, 1].set_ylim([zmax, zmin])
     cbar = fig.colorbar(im, ax=ax[1, 1])
     cbar.set_label("Depth (km)")
-    plt.savefig(os.path.join(figure_path, f"location_{iter}.png"), bbox_inches="tight", dpi=300)
+    plt.savefig(os.path.join(figure_path, f"location_{suffix}.png"), bbox_inches="tight", dpi=300)
     plt.close(fig)
 
 
@@ -189,8 +188,8 @@ def optimize(args, config, data_loader, travel_time):
     # init loss
     loss = 0
     for meta in data_loader:
-        station_index = meta["station_index"]
-        event_index = meta["event_index"]
+        station_index = meta["idx_sta"]
+        event_index = meta["idx_eve"]
         phase_time = meta["phase_time"]
         phase_type = meta["phase_type"]
         phase_weight = meta["phase_weight"]
@@ -214,8 +213,8 @@ def optimize(args, config, data_loader, travel_time):
             travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
             optimizer.zero_grad()
             for meta in data_loader:
-                station_index = meta["station_index"]
-                event_index = meta["event_index"]
+                station_index = meta["idx_sta"]
+                event_index = meta["idx_eve"]
                 phase_time = meta["phase_time"]
                 phase_type = meta["phase_type"]
                 phase_weight = meta["phase_weight"]
@@ -244,8 +243,8 @@ def optimize(args, config, data_loader, travel_time):
             prev_loss = 0
             loss = 0
             for meta in data_loader:
-                station_index = meta["station_index"]
-                event_index = meta["event_index"]
+                station_index = meta["idx_sta"]
+                event_index = meta["idx_eve"]
                 phase_time = meta["phase_time"]
                 phase_type = meta["phase_type"]
                 phase_weight = meta["phase_weight"]
@@ -279,8 +278,8 @@ def optimize(args, config, data_loader, travel_time):
 
     loss = 0
     for meta in data_loader:
-        station_index = meta["station_index"]
-        event_index = meta["event_index"]
+        station_index = meta["idx_sta"]
+        event_index = meta["idx_eve"]
         phase_time = meta["phase_time"]
         phase_type = meta["phase_type"]
         phase_weight = meta["phase_weight"]
@@ -313,9 +312,9 @@ def main(args):
     if "maxdepth" not in config:
         config["maxdepth"] = 20.0
 
-    # %%
+    # %% one projection for the region limits, the stations and the events
+    proj = Proj(f"+proj=aeqd +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
     if ("xlim_km" not in config) or ("ylim_km" not in config) or ("zlim_km" not in config):
-        proj = Proj(f"+proj=aeqd +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
         config["xlim_km"] = proj(
             longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
         )[0]
@@ -355,9 +354,6 @@ def main(args):
     events = pd.read_csv(args.events, parse_dates=["time"])
 
     # %%
-    lon0 = stations["longitude"].median()
-    lat0 = stations["latitude"].median()
-    proj = Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0}  +units=km")
     if "depth_km" not in stations:
         stations["depth_km"] = -stations["elevation_m"] / 1000
     if "station_term" not in stations:
@@ -401,7 +397,7 @@ def main(args):
     # %%
     events_origin = events.copy()
     # %%
-    utils.init_distributed_mode(args)
+    args.distributed = False  # single process (the DDP set-up lived in the deleted root utils.py)
     print(args)
 
     phase_dataset = PhaseDataset(picks, events, stations, config=args)
@@ -421,7 +417,7 @@ def main(args):
         event_loc=event_loc_init,  # Initial location
         # event_loc=events[["x_km", "y_km", "z_km"]].values,
         # event_time=event_time,
-        velocity={"P": vp, "S": vs},
+        velocity={0: vp, 1: vs},  # phase types are 0 (P) and 1 (S)
         eikonal=eikonal,
     )
 
@@ -453,10 +449,7 @@ def main(args):
     # %%
     events_boostrap = []
     for i in tqdm(range(args.bootstrap), desc="Bootstrapping:"):
-        picks_by_event = picks.groupby("idx_eve")
-        # picks_by_event_sample = picks_by_event.apply(lambda x: x.sample(frac=1.0, replace=True))  # Bootstrap
-        picks_by_event_sample = picks_by_event.apply(lambda x: x.sample(n=len(x) - 1, replace=False))  # Jackknife
-        picks_sample = picks_by_event_sample.reset_index(drop=True)
+        picks_sample = picks.drop(picks.groupby("idx_eve").sample(n=1).index).reset_index(drop=True)  # jackknife: one pick out per event
         phase_dataset = PhaseDataset(picks_sample, events, stations, config=args)
         if args.distributed:
             sampler = torch.utils.data.distributed.DistributedSampler(phase_dataset, shuffle=False)
@@ -472,7 +465,7 @@ def main(args):
             station_loc,
             station_dt=station_dt,
             event_loc=event_loc_init,  # Initial location
-            velocity={"P": vp, "S": vs},
+            velocity={0: vp, 1: vs},  # phase types are 0 (P) and 1 (S)
             eikonal=eikonal,
         )
         optimize(args, config, data_loader, travel_time)
