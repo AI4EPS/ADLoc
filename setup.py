@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="ADLoc",
-    version="1.0.7",
+    version="1.0.8",
     long_description="ADLoc",
     long_description_content_type="text/markdown",
     packages=["adloc"],

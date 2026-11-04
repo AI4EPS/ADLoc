@@ -1,4 +1,6 @@
 # %%
+import warnings
+
 import numpy as np
 import scipy
 from sklearn.base import BaseEstimator
@@ -29,6 +31,12 @@ class ADLoc(BaseEstimator):
                 print(f"Using default velocity: {vel}")
         self.config = config
         self.vel = vel
+        # where events can be: the region (bfgs_bounds, when given, overrides it), as in sacloc3d and GaMMA
+        self.bounds = config.get("bfgs_bounds", [tuple(xlim), tuple(ylim), tuple(zlim), (None, None)])
+        if eikonal is not None and (eikonal["zgrid"][0] > zlim[0] or eikonal["zgrid"][-1] < zlim[1]):
+            z0, z1 = eikonal["zgrid"][0], eikonal["zgrid"][-1]
+            warnings.warn(f"the travel-time tables (z {z0:.1f} to {z1:.1f} km) do not cover zlim_km = {tuple(zlim)}: "
+                          "build them with eikonal zlim_km covering it")
 
         self.num_event = num_event
 
@@ -143,7 +151,7 @@ class ADLoc(BaseEstimator):
             #     (self.config["zlim_km"][0], self.config["zlim_km"][1]),
             #     (None, None),
             # ],
-            bounds=self.config["bfgs_bounds"],
+            bounds=self.bounds,
         )
 
         self.events[event_index, :] = opt.x
