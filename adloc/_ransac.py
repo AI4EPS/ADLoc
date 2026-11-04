@@ -464,7 +464,7 @@ class RANSACRegressor(
 
             # choose random sample set
             # subset_idxs = sample_without_replacement(n_samples, min_samples, random_state=random_state)
-            subset_idxs = np.random.choice(sample_idxs, min_samples, replace=False, p=prob)
+            subset_idxs = random_state.choice(sample_idxs, min_samples, replace=False, p=prob)
             X_subset = X[subset_idxs]
             y_subset = y[subset_idxs]
 

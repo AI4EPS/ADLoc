@@ -1,8 +1,13 @@
+import copy
 import multiprocessing as mp
-from contextlib import nullcontext
+import os
+import pickle
+import tempfile
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
 import pandas as pd
+from threadpoolctl import threadpool_limits
 from tqdm import tqdm
 from pyproj import Proj
 
@@ -252,12 +257,48 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     return picks, event
 
 
+@contextmanager
+def _one_thread_env():
+    """One thread per math library (BLAS, OpenMP) in workers spawned inside: they read these at import, before
+    threadpool_limits could reach them. The workers are the parallelism; threads inside them only contend."""
+    keys = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ.update(dict.fromkeys(keys, "1"))
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+_WORKER = None  # (config, estimator) in each worker, set once by _init_worker
+
+
+def _init_worker(config, estimator, path):
+    global _WORKER
+    threadpool_limits(1)  # as _one_thread_env, for libraries already loaded
+    if path is not None:  # the tables, shared through the page cache rather than copied
+        eikonal = {**estimator.eikonal, "tt": np.load(path, mmap_mode="r")}
+        swap = lambda d: {k: eikonal if v is estimator.eikonal else v for k, v in d.items()}
+        estimator.config, config = swap(estimator.config), swap(config)
+        estimator.eikonal = eikonal
+    _WORKER = (config, estimator)
+
+
+def _invert_job(picks, stations, event_index, event_init):
+    config, estimator = _WORKER
+    return invert(picks, stations, config, estimator, event_index, event_init)
+
+
 def invert_location(picks, stations, config, estimator, events_init=None, iter=0):
 
     if "ncpu" in config:
         NCPU = config["ncpu"]
     else:
-        NCPU = min(64, mp.cpu_count() * 2 - 1)
+        NCPU = min(32, mp.cpu_count() - 1)  # as GaMMA: more workers gave no speed on 64 cores
     print(f"Using {NCPU} CPUs for ADLoc inversion.")
 
     jobs = []
@@ -265,7 +306,22 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
     events_inverted = []
     picks_inverted = []
     pbar = tqdm(total=num_events, desc=f"Iter {iter}")
-    with mp.get_context("spawn").Pool(NCPU) as pool:
+    # config and the estimator reach each worker once, through the initializer; the tables (MBs) through a
+    # memory-mapped file, since initializer data above the 64 KB pipe buffer make spawn start the workers one by one
+    tmp = tempfile.TemporaryDirectory()
+    shared = (config, estimator, None)
+    eikonal = estimator.eikonal
+    if eikonal is not None:
+        path = os.path.join(tmp.name, "tt.npy")
+        np.save(path, eikonal["tt"])
+        light = {k: v for k, v in eikonal.items() if k != "tt"}
+        est = copy.copy(estimator)
+        est.eikonal, est.config = light, {k: light if v is eikonal else v for k, v in estimator.config.items()}
+        shared = ({k: light if v is eikonal else v for k, v in config.items()}, est, path)
+    assert len(pickle.dumps(shared)) < 2**16, "spawn blocks on initializer data above the 64 KB pipe buffer"
+    with _one_thread_env():
+        pool = mp.get_context("spawn").Pool(NCPU, initializer=_init_worker, initargs=shared)
+    with tmp, pool:
         for idx_eve, picks_by_event in picks.groupby("idx_eve"):
             if config.get("proj") is None or events_init is None:
                 event_init = None
@@ -285,8 +341,8 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
             # pbar.update()
 
             job = pool.apply_async(
-                invert,
-                (picks_by_event, stations, config, estimator, idx_eve, event_init),
+                _invert_job,
+                (picks_by_event, stations, idx_eve, event_init),
                 callback=lambda _: pbar.update(),
             )
             jobs.append(job)

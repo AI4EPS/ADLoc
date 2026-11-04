@@ -249,9 +249,7 @@ def init_eikonal2d(config):
     out = {"station_z": z_sta, "rgrid": rgrid, "zgrid": zgrid, "nr": len(rgrid), "nz": len(zgrid), "h": h,
            "tt": np.array(tables, dtype=np.float32)}  # (phase, table, nr, nz)
     print(f"Eikonal: {len(z_sta)} station tables of {len(rgrid)} x {len(zgrid)} nodes in {time.time() - t0:.1f} s")
-    config.update(out)
-
-    return config
+    return out  # only the tables and their grid, not the inputs: this dict goes to every worker
 
 
 if __name__ == "__main__":
