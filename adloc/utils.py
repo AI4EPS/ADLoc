@@ -19,6 +19,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     Earthquake location for a single event using RANSAC.
     """
 
+    def pinned(estimator):  # at the bottom of its search box: the depth is unconstrained
+        return estimator.events[0][2] > estimator.bounds[2][1] - 0.01
+
     def is_model_valid(estimator, X, y):
         """
         X: idx_sta, type, score, amp
@@ -30,7 +33,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         if not (n0 >= config["min_p_picks"] and n1 >= config["min_s_picks"]):
             return False
 
-        if estimator.events[0][2] < config["zlim_km"][0]:  # above the allowed depths (zlim_km[0] < 0 above sea level)
+        if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
+            return False
+        if pinned(estimator):
             return False
 
         if estimator.score(X, y) < config["min_score"]:
@@ -69,9 +74,16 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     stations_ = stations[stations["station_id"].isin(picks["station_id"].unique())].copy()
     if "proj" not in config or config["proj"] is None:
-        lat0 = stations_["latitude"].mean()
-        lon0 = stations_["longitude"].mean()
+        # global: a frame centred on this event's stations, each position counted once, as GaMMA's segments;
+        # longitude averaged on the circle, so stations across +-180 deg stay together
+        lon, lat = np.radians(np.unique(stations_[["longitude", "latitude"]].to_numpy(float), axis=0)).T
+        lon0, lat0 = np.degrees(np.arctan2(np.sin(lon).mean(), np.cos(lon).mean())), np.degrees(lat.mean())
         proj = Proj(f"+proj=aeqd +lon_0={lon0} +lat_0={lat0}  +units=km")
+        # and its top no higher than this event's highest station, so one high station elsewhere does not lift it
+        # (set for every event: the estimator is shared by the events of a worker)
+        if "bfgs_bounds" not in config:
+            z0, z1 = config["zlim_km"]
+            estimator.set_params(config={**config, "zlim_km": (max(z0, stations_["z_km"].min()), z1)})
     else:
         proj = config["proj"]
     x_km, y_km = proj(stations_["longitude"].values, stations_["latitude"].values)
@@ -155,6 +167,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
         else:
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s"]].values)
+        if pinned(reg.estimator_):  # RANSAC's final refit on all its inliers is not checked by is_model_valid
+            raise ValueError("RANSAC could not find a valid consensus set: the final fit is pinned at the bottom")
     except Exception as e:
         # print(f"No valid model for event_index {event_index}.")
         message = "RANSAC could not find a valid consensus set."
