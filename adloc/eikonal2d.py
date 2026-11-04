@@ -112,14 +112,38 @@ def traveltime(event_index, station_index, phase_type, events, stations, eikonal
 
 
 @njit
+def _node(tt, p, m, a, b, nr, nz):
+    """Table value at node (a, b), one node beyond the grid at most: mirrored at r = 0 (T is even in r), linear
+    continuation beyond the other edges."""
+    a = abs(a)
+    if a > nr - 1:
+        return 2.0 * _node(tt, p, m, nr - 1, b, nr, nz) - _node(tt, p, m, nr - 2, b, nr, nz)
+    if b < 0:
+        return 2.0 * tt[p, m, a, 0] - tt[p, m, a, 1]
+    if b > nz - 1:
+        return 2.0 * tt[p, m, a, nz - 1] - tt[p, m, a, nz - 2]
+    return tt[p, m, a, b]
+
+
+@njit
+def _catmull_rom(f):
+    """Weights of nodes -1, 0, 1, 2 at fraction f in [0, 1], and their derivatives in f."""
+    f2, f3 = f * f, f * f * f
+    w = ((-f3 + 2 * f2 - f) / 2, (3 * f3 - 5 * f2 + 2) / 2, (-3 * f3 + 4 * f2 + f) / 2, (f3 - f2) / 2)
+    d = ((-3 * f2 + 4 * f - 1) / 2, (9 * f2 - 10 * f) / 2, (-9 * f2 + 8 * f + 1) / 2, (3 * f2 - 2 * f) / 2)
+    return w, d
+
+
+@njit
 def _lookup(tt, iph, itab, dx, dy, z, zgrid0, h):
     """Travel time and its gradient w.r.t. the event (x, y, z) from the tables [phase iph, station depth itab], for
-    events at horizontal offsets dx, dy from the station and absolute depth z. The time is the bilinear interpolation
-    of the table and the gradient its exact derivative, so an optimizer's line search sees a consistent pair.
+    events at horizontal offsets dx, dy from the station and absolute depth z. The time is the bicubic (Catmull-Rom)
+    interpolation of the table and the gradient its exact derivative: a consistent pair, and smooth across the nodes.
+    (A bilinear time has a kink at every node, where L-BFGS stops: 24% of the Ridgecrest depths sat on a node.)
 
-    Outside the grid (r > rmax, z above the top or below the bottom) the edge cell's bilinear form continues: the cell
-    index stops at the edge, the fraction does not. The time stays continuous, its gradient is still its exact
-    derivative and never zero, so an event pushed outside is pulled back by the data."""
+    Outside the grid (r > rmax, z above the top or below the bottom) the time continues linearly from the nearest grid
+    point c: T(c) + grad T(c) . (q - c). It is continuous, and its gradient (exact, with the cross term d2T/drdz where
+    c moves along the edge) is never zero, so an event pushed outside is pulled back."""
     n = dx.shape[0]
     nr, nz = tt.shape[2], tt.shape[3]
     t = np.empty(n)
@@ -127,20 +151,36 @@ def _lookup(tt, iph, itab, dx, dy, z, zgrid0, h):
     for k in range(n):
         p, m = iph[k], itab[k]
         r = np.sqrt(dx[k] ** 2 + dy[k] ** 2)
-        x, y = r / h, (z[k] - zgrid0) / h
-        i = min(max(int(np.floor(x)), 0), nr - 2)
-        j = min(max(int(np.floor(y)), 0), nz - 2)
-        fx, fy = x - i, y - j
-        t00, t10, t01, t11 = tt[p, m, i, j], tt[p, m, i + 1, j], tt[p, m, i, j + 1], tt[p, m, i + 1, j + 1]
-        c = t11 - t10 - t01 + t00
-        t[k] = t00 + (t10 - t00) * fx + (t01 - t00) * fy + c * fx * fy
-        gr = ((t10 - t00) + c * fy) / h
+        x, y = r / h, (z[k] - zgrid0) / h  # event in grid units (x = r / h, y = z from the top)
+        xc, yc = min(x, nr - 1.0), min(max(y, 0.0), nz - 1.0)  # c: the nearest grid point (c = q inside the grid)
+        i, j = min(int(xc), nr - 2), min(int(yc), nz - 2)
+        wx, dwx = _catmull_rom(xc - i)
+        wy, dwy = _catmull_rom(yc - j)
+        tq, tx, ty, txy = 0.0, 0.0, 0.0, 0.0  # T, dT/dx, dT/dy, d2T/dxdy at c, in grid units
+        for a in range(4):
+            for b in range(4):
+                v = _node(tt, p, m, i - 1 + a, j - 1 + b, nr, nz)
+                tq += wx[a] * wy[b] * v
+                tx += dwx[a] * wy[b] * v
+                ty += wx[a] * dwy[b] * v
+                txy += dwx[a] * dwy[b] * v
+        # Outside the grid the time continues linearly from c with the slope at c:
+        #     T(q) = T(c) + T_x(c) (x - xc) + T_y(c) (y - yc)
+        # (inside, x = xc and y = yc: the bicubic time). Its gradient by the chain rule: c follows the event along an
+        # axis where the event is inside the grid (xc = x) and stays fixed along an axis where it is outside, so
+        #     dT/dx = T_x(c) + T_xy(c) (y - yc)   x inside (e.g. the event above the top: c slides along the top edge)
+        #     dT/dx = T_x(c)                      x beyond rmax (c fixed in x)
+        # and likewise for y. Time and gradient are continuous across the edge, and the gradient is the edge's, never
+        # zero, so an event pushed outside is pulled back toward the data.
+        t[k] = tq + tx * (x - xc) + ty * (y - yc)
+        gr = (tx + (txy * (y - yc) if x == xc else 0.0)) / h
+        gz = (ty + (txy * (x - xc) if y == yc else 0.0)) / h
         cx, cy = 0.0, 0.0
         if r > 1e-9:
             cx, cy = dx[k] / r, dy[k] / r
         g[k, 0] = gr * cx
         g[k, 1] = gr * cy
-        g[k, 2] = ((t01 - t00) + c * fx) / h
+        g[k, 2] = gz
     return t, g
 
 
@@ -338,17 +378,24 @@ if __name__ == "__main__":
     # the gradient is the derivative of the returned time, inside the grid and beyond every edge
     rmax, ztop, zbot = eik["rgrid"][-1], eik["zgrid"][0], eik["zgrid"][-1]
     st = np.array([[0.0, 0.0, -1.23]])
-    q = np.vstack([ev[:300], [[rmax + 3, 0, 10], [0, rmax + 5, 5], [20, 5, ztop - 2], [10, 10, zbot + 4], [rmax + 2, 0, zbot + 2]]])
+    rng = np.random.default_rng(1)
+    k = 100  # beyond rmax, above the top, below the bottom, and the corners
+    rr, zz_ = rng.uniform(1, rmax - 1, k), rng.uniform(ztop + 1, zbot - 1, k)
+    rout, ztout, zbout = rmax + rng.uniform(0.1, 5, k), ztop - rng.uniform(0.1, 5, k), zbot + rng.uniform(0.1, 5, k)
+    az = rng.uniform(0, 2 * np.pi, k)
+    out = np.vstack([np.c_[r * np.cos(az), r * np.sin(az), z] for r, z in [(rout, zz_), (rr, ztout), (rr, zbout), (rout, ztout), (rout, zbout)]])
+    q = np.vstack([ev[:300], out])
     pq = np.zeros(len(q), int)
     g = calc_grad_traveltime(q, st, pq, eik)
     fd = np.column_stack([(_eval(q + 1e-6 * d, st, pq, eik)[0] - _eval(q - 1e-6 * d, st, pq, eik)[0]) / 2e-6 for d in np.eye(3)])  # float64 times
-    print(f"gradient vs finite differences: p95 {np.percentile(np.linalg.norm(g - fd, axis=1), 95):.1e} s/km")
-    assert np.percentile(np.linalg.norm(g - fd, axis=1), 95) < 1e-5 and np.all(np.linalg.norm(g[-5:], axis=1) > 0.05)
+    err = np.linalg.norm(g - fd, axis=1)
+    print(f"gradient vs finite differences: max inside {err[:300].max():.1e}, outside {err[300:].max():.1e} s/km")
+    assert err.max() < 1e-5 and np.all(np.linalg.norm(g[300:], axis=1) > 0.05)
 
-    # continuous across the edges; a station depth without a table raises
-    for a, b in [([rmax - 1e-3, 0, 10], [rmax + 1e-3, 0, 10]), ([5, 5, ztop + 1e-3], [5, 5, ztop - 1e-3]), ([5, 5, zbot - 1e-3], [5, 5, zbot + 1e-3])]:
-        t2 = calc_traveltime(np.array([a, b], float), np.array([[0.0, 0.0, -1.5]]), [0, 0], eik)
-        assert abs(t2[1] - t2[0]) < 1e-3
+    # time and gradient continuous across the edges; a station depth without a table raises
+    for a, b in [([rmax - 1e-6, 0, 10], [rmax + 1e-6, 0, 10]), ([5, 5, ztop + 1e-6], [5, 5, ztop - 1e-6]), ([5, 5, zbot - 1e-6], [5, 5, zbot + 1e-6])]:
+        t2, g2 = _eval(np.array([a, b], float), np.array([[0.0, 0.0, -1.5]]), np.array([0, 0]), eik)
+        assert abs(t2[1] - t2[0]) < 1e-5 and np.abs(g2[1] - g2[0]).max() < 1e-4
     try:
         calc_traveltime(ev[:3], np.array([[0.0, 0.0, -0.7]]), [0, 0, 0], eik)
         raise AssertionError("expected a ValueError for a station depth without a table")

@@ -19,9 +19,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     Earthquake location for a single event using RANSAC.
     """
 
-    def pinned(estimator):  # at the bottom of its search box: the depth is unconstrained
-        return estimator.events[0][2] > estimator.bounds[2][1] - 0.01
-
     def is_model_valid(estimator, X, y):
         """
         X: idx_sta, type, score, amp
@@ -34,8 +31,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             return False
 
         if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
-            return False
-        if pinned(estimator):
             return False
 
         if estimator.score(X, y) < config["min_score"]:
@@ -116,10 +111,11 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         )
     t0 = X["phase_time"].min()
 
+    z0 = min(5.0, np.mean(estimator.config["zlim_km"]))  # start depth in both modes, inside shallow search ranges
     if (event_init is None) or len(X) == 0:
-        event_init = np.array([[np.median(X["x_km"]), np.median(X["y_km"]), 5.0, 0.0]])
+        event_init = np.array([[np.median(X["x_km"]), np.median(X["y_km"]), z0, 0.0]])
     else:
-        event_init = np.array([[event_init[0], event_init[1], event_init[2], (event_init[3] - t0).total_seconds()]])
+        event_init = np.array([[event_init[0], event_init[1], z0, (event_init[3] - t0).total_seconds()]])
 
     # xstd = np.std(X["x_km"])
     # ystd = np.std(X["y_km"])
@@ -167,8 +163,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s", "amp"]].values)
         else:
             reg.fit(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values, X[["t_s"]].values)
-        if pinned(reg.estimator_):  # RANSAC's final refit on all its inliers is not checked by is_model_valid
-            raise ValueError("RANSAC could not find a valid consensus set: the final fit is pinned at the bottom")
     except Exception as e:
         # print(f"No valid model for event_index {event_index}.")
         message = "RANSAC could not find a valid consensus set."

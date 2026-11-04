@@ -138,20 +138,15 @@ class ADLoc(BaseEstimator):
         self.has_amplitude = y.shape[1] > 1  # columns: time[, amplitude]
         yt = y[:, 0]
 
-        opt = scipy.optimize.minimize(
-            self.huber_loss_grad,
-            # self.l2_loss_grad,
-            x0=self.events[event_index],
-            method="L-BFGS-B",
-            jac=True,
-            args=(X, yt, self.vel, self.eikonal),
-            # bounds=[
-            #     (self.config["xlim_km"][0], self.config["xlim_km"][1]),
-            #     (self.config["ylim_km"][0], self.config["ylim_km"][1]),
-            #     (self.config["zlim_km"][0], self.config["zlim_km"][1]),
-            #     (None, None),
-            # ],
-            bounds=self.bounds,
+        # the start, and the same start at three depths across the search range: depth is weakly constrained and a
+        # velocity step can stop the fit above it, so the best of four fits is kept
+        x0 = self.events[event_index]
+        z0, z1 = self.bounds[2]
+        starts = [x0] + [np.r_[x0[:2], z, x0[3]] for z in np.linspace(z0, z1, 5)[1:-1]]
+        opt = min(
+            (scipy.optimize.minimize(self.huber_loss_grad, x0=s, method="L-BFGS-B", jac=True,
+                                     args=(X, yt, self.vel, self.eikonal), bounds=self.bounds) for s in starts),
+            key=lambda o: o.fun,
         )
 
         self.events[event_index, :] = opt.x
