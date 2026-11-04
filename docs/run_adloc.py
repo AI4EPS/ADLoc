@@ -43,8 +43,8 @@ if __name__ == "__main__":
     # picks = pd.read_csv(picks_file, parse_dates=["phase_time"])
     # events = pd.read_csv(events_file, parse_dates=["time"])
     # config = json.load(open(config_file))
-    # config["mindepth"] = 0
-    # config["maxdepth"] = 15
+    # config["mindepth_km"] = 0
+    # config["maxdepth_km"] = 15
 
     # ## Eikonal for 1D velocity model
     # zz = [0.0, 5.5, 16.0, 32.0]
@@ -78,8 +78,8 @@ if __name__ == "__main__":
         "minlongitude": -118.2,
         "maxlatitude": 36.4,
         "minlatitude": 35.3,
-        "mindepth": 0,
-        "maxdepth": 15,
+        "mindepth_km": 0,
+        "maxdepth_km": 15,
     }
 
     ## Eikonal for 1D velocity model
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     if ("xlim_km" not in config) or ("ylim_km" not in config) or ("zlim_km" not in config):
         xmin, ymin = proj(config["minlongitude"], config["minlatitude"])
         xmax, ymax = proj(config["maxlongitude"], config["maxlatitude"])
-        zmin, zmax = config["mindepth"], config["maxdepth"]
+        zmin, zmax = config["mindepth_km"], config["maxdepth_km"]
         config["xlim_km"] = (xmin, xmax)
         config["ylim_km"] = (ymin, ymax)
         config["zlim_km"] = (zmin, zmax)
@@ -144,18 +144,11 @@ if __name__ == "__main__":
         "h": h,
         "xlim_km": config["xlim_km"],
         "ylim_km": config["ylim_km"],
-        "zlim_km": config["zlim_km"],
+        "zlim_km": config["zlim_km"],  # deeper (e.g. (0, 60), below the Moho) models far first arrivals (Pn)
         "station_z_km": stations["z_km"].values,
+        "station_xy_km": stations[["x_km", "y_km"]].values,
     }
     config["eikonal"] = init_eikonal2d(config["eikonal"])
-
-    # %%
-    config["bfgs_bounds"] = (
-        (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
-        (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
-        (config["zlim_km"][0], config["zlim_km"][1] + 1),  # mindepth < 0 lets events rise above sea level
-        (None, None),  # t
-    )
 
     # %% reindex in case the index does not start from 0 or is not continuous
     stations["idx_sta"] = np.arange(len(stations))

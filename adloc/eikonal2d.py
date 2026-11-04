@@ -220,16 +220,21 @@ def init_eikonal2d(config):
     absolute depth, positive down; a station above sea level has z < 0). The 1-D model is read at absolute depth, so
     every station sees the same layers, and its top velocity extends upward to the highest station.
 
-    config: vel {"Z", "P", "S"} (km, km/s), h (km), xlim_km and ylim_km (the region), zlim_km (event depths), and
-    station_z_km (the station depths). Adds the tables and the grid to config and returns it.
+    config: vel {"Z", "P", "S"} (km, km/s), h (km), xlim_km and ylim_km (the region), zlim_km (the tables' depths:
+    the events' zlim_km, or deeper, e.g. (0, 60), so far stations' first arrivals (Pn) are modelled), station_z_km
+    (the station depths) and optionally station_xy_km (n, 2). Adds the tables and the grid to config and returns it.
 
-    The grid holds the region's diagonal in r and zlim_km plus the stations in z, with MARGIN cells beyond, so events
-    kept inside xlim, ylim and zlim are looked up inside the grid. Only a station outside xlim, ylim (r > rmax) or an
-    event moved past the bounds uses the linear extension of _lookup; set xlim and ylim to cover the stations to avoid it.
+    The grid holds, in r, the diagonal of the region and the stations together (as eikonal3d and GaMMA), and in z,
+    zlim_km plus the stations, with MARGIN cells beyond, so events inside xlim, ylim and zlim are looked up inside the
+    grid. Without station_xy_km, a station outside xlim, ylim (r > rmax) uses the linear extension of _lookup.
     """
     h = config["h"]
     z_sta = np.unique(np.round(np.asarray(config["station_z_km"], dtype=float) / DZ_STA)) * DZ_STA
-    rmax = np.hypot(config["xlim_km"][1] - config["xlim_km"][0], config["ylim_km"][1] - config["ylim_km"][0])
+    lo, hi = np.array([config["xlim_km"], config["ylim_km"]], dtype=float).T  # (2,) each: x, y
+    if "station_xy_km" in config:
+        xy = np.asarray(config["station_xy_km"], dtype=float)
+        lo, hi = np.minimum(lo, xy.min(0)), np.maximum(hi, xy.max(0))
+    rmax = np.hypot(*(hi - lo))
     rgrid = np.arange(int(np.ceil(rmax / h)) + MARGIN + 1) * h
     z0 = (np.floor(min(config["zlim_km"][0], z_sta.min()) / h) - MARGIN) * h  # nodes on multiples of h, as in ADTomo
     z1 = (np.ceil(max(config["zlim_km"][1], z_sta.max()) / h) + MARGIN) * h
