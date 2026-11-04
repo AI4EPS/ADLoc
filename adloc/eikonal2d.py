@@ -6,7 +6,8 @@ from numba import njit
 
 MAX_ITER, TOL = 100, 1e-8  # sweeps stop when no node changes by more than TOL (s), as in ADTomo and eikonal3d
 MARGIN = 2  # grid cells beyond the events and stations, so their queries never touch the one-sided edge differences
-DZ_STA = 0.01  # km: stations within 10 m of depth share a table (the model shifts by at most 5 m, about 1 ms)
+DZ_STA = 0.1  # km: stations within 100 m of depth share a table (a station moves at most 50 m, ~0.01 s, a constant per
+# station that station terms absorb), as in GaMMA; 10 m bins made ~200 tables and ~1 GB for a statewide network
 
 ###################################### Eikonal Solver ######################################
 
