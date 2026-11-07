@@ -142,7 +142,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     ## Location using RANSAC
     num_picks = len(X)
-    if num_picks <= max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)):
+    if num_picks < max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)):
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if has_amp:
