@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from numba import njit
 
-from .eikonal2d import MARGIN, MAX_ITER, TOL
+from .eikonal2d import MARGIN, MAX_ITER, TOL, _catmull_rom
 
 ###################################### Eikonal Solver ######################################
 
@@ -184,36 +184,66 @@ def init_eikonal3d(config, stations):
 
 
 @njit
+def _stencil(x, n):
+    """Along one axis of n nodes, for an event at x (grid units): the nearest grid point xc, the 4 nodes around it, and
+    their Catmull-Rom weights and the weights' derivatives. A node one beyond the edge is the linear continuation
+    2 T[0] - T[1] (or 2 T[n-1] - T[n-2]): its weight moves to those two nodes."""
+    xc = min(max(x, 0.0), n - 1.0)
+    i = min(int(xc), n - 2)
+    w, d = _catmull_rom(xc - i)
+    if i == 0:
+        w, d = (0.0, w[1] + 2 * w[0], w[2] - w[0], w[3]), (0.0, d[1] + 2 * d[0], d[2] - d[0], d[3])
+    if i == n - 2:
+        w, d = (w[0], w[1] - w[3], w[2] + 2 * w[3], 0.0), (d[0], d[1] - d[3], d[2] + 2 * d[3], 0.0)
+    return xc, (max(i - 1, 0), i, i + 1, min(i + 2, n - 1)), w, d
+
+
+@njit
 def _lookup(tt, iph, ista, q, grid0, h):
     """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista]: the
-    trilinear interpolation of the table and its exact derivative. Outside the grid the edge cell's trilinear form
-    continues, as in eikonal2d._lookup: the time stays continuous and its gradient is its exact derivative, never zero.
-    """
+    tricubic (Catmull-Rom) interpolation of the table and its exact derivative, a consistent pair, smooth across the
+    nodes (a trilinear time has a kink at every node plane, where L-BFGS stops), as in eikonal2d._lookup and ADTomo.
+
+    Outside the grid the time continues linearly from the nearest grid point c: T(c) + grad T(c) . (q - c). It is
+    continuous, and its gradient (exact, with the cross terms where c moves along a face) is never zero, so an event
+    pushed outside is pulled back."""
     n = q.shape[0]
     nx, ny, nz = tt.shape[2], tt.shape[3], tt.shape[4]
     t = np.empty(n)
     g = np.empty((n, 3))
     for k in range(n):
         p, m = iph[k], ista[k]
-        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h
-        i = min(max(int(np.floor(x)), 0), nx - 2)
-        j = min(max(int(np.floor(y)), 0), ny - 2)
-        l = min(max(int(np.floor(z)), 0), nz - 2)
-        fx, fy, fz = x - i, y - j, z - l
-        tk, gx, gy, gz = 0.0, 0.0, 0.0, 0.0
-        for a in range(2):
-            wx, sx = (fx, 1.0) if a else (1.0 - fx, -1.0)  # weight and its derivative along x
-            for b in range(2):
-                wy, sy = (fy, 1.0) if b else (1.0 - fy, -1.0)
-                for c in range(2):
-                    wz, sz = (fz, 1.0) if c else (1.0 - fz, -1.0)
-                    v = tt[p, m, i + a, j + b, l + c]
-                    tk += wx * wy * wz * v
-                    gx += sx * wy * wz * v
-                    gy += wx * sy * wz * v
-                    gz += wx * wy * sz * v
-        t[k] = tk
-        g[k, 0], g[k, 1], g[k, 2] = gx / h, gy / h, gz / h
+        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h  # event in grid units
+        xc, ix, wx, dx = _stencil(x, nx)
+        yc, iy, wy, dy = _stencil(y, ny)
+        zc, iz, wz, dz = _stencil(z, nz)
+        tq, tx, ty, tz, txy, txz, tyz = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # T, its gradient and cross derivatives at c
+        for a in range(4):
+            for b in range(4):
+                s, sz = 0.0, 0.0  # the sum along z, and its derivative in z
+                for c in range(4):
+                    v = tt[p, m, ix[a], iy[b], iz[c]]
+                    s += wz[c] * v
+                    sz += dz[c] * v
+                tq += wx[a] * wy[b] * s
+                tx += dx[a] * wy[b] * s
+                ty += wx[a] * dy[b] * s
+                tz += wx[a] * wy[b] * sz
+                txy += dx[a] * dy[b] * s
+                txz += dx[a] * wy[b] * sz
+                tyz += wx[a] * dy[b] * sz
+        # Outside the grid the time continues linearly from c with the slope at c:
+        #     T(q) = T(c) + T_x(c) (x - xc) + T_y(c) (y - yc) + T_z(c) (z - zc)
+        # (inside, q = c: the tricubic time). Its gradient by the chain rule: c follows the event along an axis where
+        # the event is inside the grid (xc = x) and stays fixed along an axis where it is outside, so
+        #     dT/dx = T_x(c) + T_xy(c) (y - yc) + T_xz(c) (z - zc)   x inside (c slides along the face)
+        #     dT/dx = T_x(c)                                         x outside (c fixed in x)
+        # and likewise for y and z, as in eikonal2d._lookup.
+        ex, ey, ez = x - xc, y - yc, z - zc
+        t[k] = tq + tx * ex + ty * ey + tz * ez
+        g[k, 0] = (tx + (txy * ey + txz * ez if ex == 0.0 else 0.0)) / h
+        g[k, 1] = (ty + (txy * ex + tyz * ez if ey == 0.0 else 0.0)) / h
+        g[k, 2] = (tz + (txz * ex + tyz * ey if ez == 0.0 else 0.0)) / h
     return t, g
 
 
