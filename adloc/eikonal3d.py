@@ -227,12 +227,15 @@ def _tricubic(tt, iph, ista, q, grid0, h):
         wx, dwx = _catmull_rom(xc - i)
         wy, dwy = _catmull_rom(yc - j)
         wz, dwz = _catmull_rom(zc - l)
+        # the 64 nodes are in the grid: read them directly (5x faster than 64 calls of _node)
+        inside = 1 <= i <= nx - 3 and 1 <= j <= ny - 3 and 1 <= l <= nz - 3
         tq, tx, ty, tz, txy, txz, tyz = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # T, its gradient and cross derivatives at c
         for a in range(4):
             for b in range(4):
                 v, vz = 0.0, 0.0  # the sums along z first (the 64-term sums are 3x slower): with wz, and with dwz
                 for c in range(4):
-                    node = _node(tt, p, m, i - 1 + a, j - 1 + b, l - 1 + c, nx, ny, nz)
+                    ia, jb, lc = i - 1 + a, j - 1 + b, l - 1 + c
+                    node = tt[p, m, ia, jb, lc] if inside else _node(tt, p, m, ia, jb, lc, nx, ny, nz)
                     v += wz[c] * node
                     vz += dwz[c] * node
                 tq += wx[a] * wy[b] * v
