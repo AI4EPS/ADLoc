@@ -5,7 +5,7 @@ import scipy
 from sklearn.base import BaseEstimator
 
 from ._ransac import RANSACRegressor
-from .eikonal3d import grad_traveltime, init_eikonal3d, traveltime
+from .eikonal3d import init_eikonal3d, traveltime, traveltime_grad
 
 # from sklearn.linear_model import RANSACRegressor
 from tqdm import tqdm
@@ -54,7 +54,8 @@ class ADLoc(BaseEstimator):
             v = np.array([vel[t] for t in phase_type])
             tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
         else:
-            tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
+            tt, grad = traveltime_grad(0, station_index, phase_type, event[np.newaxis, :3], eikonal)  # one lookup for both
+            tt = tt + event[3]
         loss = 0.5 * np.sum(w * (tt - y) ** 2)
 
         J = np.ones((len(X), 4))
@@ -65,7 +66,6 @@ class ADLoc(BaseEstimator):
                 / v[:, np.newaxis]
             )
         else:
-            grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
             J[:, :3] = grad
 
         J = np.sum((w * (tt - y))[:, np.newaxis] * J, axis=0)

@@ -135,23 +135,17 @@ def _catmull_rom(f):
 
 
 @njit
-def _lookup(tt, iph, itab, dx, dy, z, zgrid0, h):
-    """Travel time and its gradient w.r.t. the event (x, y, z) from the tables [phase iph, station depth itab], for
-    events at horizontal offsets dx, dy from the station and absolute depth z. The time is the bicubic (Catmull-Rom)
-    interpolation of the table and the gradient its exact derivative: a consistent pair, and smooth across the nodes.
-    (A bilinear time has a kink at every node, where L-BFGS stops: 24% of the Ridgecrest depths sat on a node.)
-
-    Outside the grid (r > rmax, z above the top or below the bottom) the time continues linearly from the nearest grid
-    point c: T(c) + grad T(c) . (q - c). It is continuous, and its gradient (exact, with the cross term d2T/drdz where
-    c moves along the edge) is never zero, so an event pushed outside is pulled back."""
-    n = dx.shape[0]
+def _bicubic(tt, iph, itab, r, z, z0, h):
+    """Time and its exact derivatives (dt/dr, dt/dz) of the bicubic (Catmull-Rom) interpolant of tables tt (phase,
+    table, nr, nz) on r = 0, h, ...: a consistent pair, smooth across the nodes (a bilinear time has a kink at every
+    node, where L-BFGS stops: 24% of the Ridgecrest depths sat on a node), as in GaMMA. Beyond the grid the time
+    continues linearly from the nearest grid point, with its exact, never-zero gradient."""
+    n = r.shape[0]
     nr, nz = tt.shape[2], tt.shape[3]
-    t = np.empty(n)
-    g = np.empty((n, 3))
+    t, tr, tz = np.empty(n), np.empty(n), np.empty(n)
     for k in range(n):
         p, m = iph[k], itab[k]
-        r = np.sqrt(dx[k] ** 2 + dy[k] ** 2)
-        x, y = r / h, (z[k] - zgrid0) / h  # event in grid units (x = r / h, y = z from the top)
+        x, y = r[k] / h, (z[k] - z0) / h  # event in grid units (x = r / h, y = z from the top)
         xc, yc = min(x, nr - 1.0), min(max(y, 0.0), nz - 1.0)  # c: the nearest grid point (c = q inside the grid)
         i, j = min(int(xc), nr - 2), min(int(yc), nz - 2)
         wx, dwx = _catmull_rom(xc - i)
@@ -173,15 +167,9 @@ def _lookup(tt, iph, itab, dx, dy, z, zgrid0, h):
         # and likewise for y. Time and gradient are continuous across the edge, and the gradient is the edge's, never
         # zero, so an event pushed outside is pulled back toward the data.
         t[k] = tq + tx * (x - xc) + ty * (y - yc)
-        gr = (tx + (txy * (y - yc) if x == xc else 0.0)) / h
-        gz = (ty + (txy * (x - xc) if y == yc else 0.0)) / h
-        cx, cy = 0.0, 0.0
-        if r > 1e-9:
-            cx, cy = dx[k] / r, dy[k] / r
-        g[k, 0] = gr * cx
-        g[k, 1] = gr * cy
-        g[k, 2] = gz
-    return t, g
+        tr[k] = (tx + (txy * (y - yc) if x == xc else 0.0)) / h
+        tz[k] = (ty + (txy * (x - xc) if y == yc else 0.0)) / h
+    return t, tr, tz
 
 
 def traveltime_grad(dx, dy, z, z_sta, phase_type, eikonal):
@@ -193,8 +181,11 @@ def traveltime_grad(dx, dy, z, z_sta, phase_type, eikonal):
     itab = np.searchsorted((z_tab[1:] + z_tab[:-1]) / 2, z_sta)  # the nearest table by depth (robust to float32 depths)
     if np.any(np.abs(z_tab[itab] - z_sta) > DZ_STA / 2 + 1e-4):
         raise ValueError("a station depth has no eikonal table: pass every station's depth in config['station_z_km']")
-    return _lookup(eikonal["tt"], vec(phase_type, np.int64), itab,
-                   vec(dx, float), vec(dy, float), vec(z, float), eikonal["zgrid"][0], eikonal["h"])
+    dx, dy = vec(dx, float), vec(dy, float)
+    r = np.hypot(dx, dy)
+    t, tr, tz = _bicubic(eikonal["tt"], vec(phase_type, np.int64), itab, r, vec(z, float), eikonal["zgrid"][0], eikonal["h"])
+    c = (r > 1e-9) / np.where(r > 1e-9, r, 1.0)  # the horizontal direction (dx, dy) / r, and 0 on the station's axis
+    return t, np.column_stack([tr * dx * c, tr * dy * c, tz])
 
 
 def _eval(event_locs, station_locs, phase_type, eikonal):
@@ -266,7 +257,7 @@ def init_eikonal2d(config):
 
     The grid holds, in r, the diagonal of the region and the stations together (as eikonal3d and GaMMA), and in z,
     zlim_km plus the stations, with MARGIN cells beyond, so events inside xlim, ylim and zlim are looked up inside the
-    grid. Without station_xy_km, a station outside xlim, ylim (r > rmax) uses the linear extension of _lookup.
+    grid. Without station_xy_km, a station outside xlim, ylim (r > rmax) uses the linear extension of _bicubic.
     """
     h = config["h"]
     z_sta = np.unique(np.round(np.asarray(config["station_z_km"], dtype=float) / DZ_STA)) * DZ_STA
