@@ -179,71 +179,52 @@ def init_eikonal3d(config, stations):
         tables = [list(pool.map(lambda s: station_table(f, grid0, h, s), sta))
                   for f in [np.ascontiguousarray(1.0 / v, dtype=float) for v in (vp, vs)]]
     print(f"Eikonal: {len(sta)} station tables of {shape[0]} x {shape[1]} x {shape[2]} nodes in {time.time() - t0:.1f} s")
-    return {"station_loc": sta, "grid0": grid0, "shape": shape, "h": h,
-            "tt": np.array(tables, dtype=np.float32)}  # (phase, station, nx, ny, nz)
+    # one node beyond each face, the linear continuation 2 T[0] - T[1], for the 4-node stencil of _lookup
+    tt = np.pad(np.array(tables, dtype=np.float32), ((0, 0), (0, 0), (1, 1), (1, 1), (1, 1)), mode="reflect", reflect_type="odd")
+    return {"station_loc": sta, "grid0": grid0, "shape": shape, "h": h, "tt": tt}  # (phase, station, nx + 2, ny + 2, nz + 2)
 
 
 @njit
-def _stencil(x, n):
-    """Along one axis of n nodes, for an event at x (grid units): the nearest grid point xc, the 4 nodes around it, and
-    their Catmull-Rom weights and the weights' derivatives. A node one beyond the edge is the linear continuation
-    2 T[0] - T[1] (or 2 T[n-1] - T[n-2]): its weight moves to those two nodes."""
-    xc = min(max(x, 0.0), n - 1.0)
+def _weights(x, n):
+    """Node i and the weights w, dw/dx of nodes i - 1 .. i + 2 at x (grid units) on an axis of n nodes: Catmull-Rom
+    inside the grid, the edge's value and slope continued as a straight line beyond it."""
+    xc = min(max(x, 0.0), n - 1.0)  # the nearest point of the grid
     i = min(int(xc), n - 2)
-    w, d = _catmull_rom(xc - i)
-    if i == 0:
-        w, d = (0.0, w[1] + 2 * w[0], w[2] - w[0], w[3]), (0.0, d[1] + 2 * d[0], d[2] - d[0], d[3])
-    if i == n - 2:
-        w, d = (w[0], w[1] - w[3], w[2] + 2 * w[3], 0.0), (d[0], d[1] - d[3], d[2] + 2 * d[3], 0.0)
-    return xc, (max(i - 1, 0), i, i + 1, min(i + 2, n - 1)), w, d
+    w, dw = _catmull_rom(xc - i)
+    e = x - xc  # zero inside the grid
+    return i, (w[0] + dw[0] * e, w[1] + dw[1] * e, w[2] + dw[2] * e, w[3] + dw[3] * e), dw
 
 
 @njit
 def _lookup(tt, iph, ista, q, grid0, h):
-    """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista]: the
-    tricubic (Catmull-Rom) interpolation of the table and its exact derivative, a consistent pair, smooth across the
-    nodes (a trilinear time has a kink at every node plane, where L-BFGS stops), as in eikonal2d._lookup and ADTomo.
+    """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista]:
 
-    Outside the grid the time continues linearly from the nearest grid point c: T(c) + grad T(c) . (q - c). It is
-    continuous, and its gradient (exact, with the cross terms where c moves along a face) is never zero, so an event
-    pushed outside is pulled back."""
+        T = sum_abc wx[a] wy[b] wz[c] T[a, b, c]      dT/dx = sum_abc dwx[a] wy[b] wz[c] T[a, b, c] / h
+
+    with the 1-D weights of _weights: tricubic inside the grid, linear along each axis beyond it; T and grad T are
+    continuous everywhere."""
     n = q.shape[0]
-    nx, ny, nz = tt.shape[2], tt.shape[3], tt.shape[4]
+    nx, ny, nz = tt.shape[2] - 2, tt.shape[3] - 2, tt.shape[4] - 2
     t = np.empty(n)
     g = np.empty((n, 3))
     for k in range(n):
         p, m = iph[k], ista[k]
-        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h  # event in grid units
-        xc, ix, wx, dx = _stencil(x, nx)
-        yc, iy, wy, dy = _stencil(y, ny)
-        zc, iz, wz, dz = _stencil(z, nz)
-        tq, tx, ty, tz, txy, txz, tyz = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # T, its gradient and cross derivatives at c
+        i, wx, dwx = _weights((q[k, 0] - grid0[0]) / h, nx)
+        j, wy, dwy = _weights((q[k, 1] - grid0[1]) / h, ny)
+        l, wz, dwz = _weights((q[k, 2] - grid0[2]) / h, nz)
+        tk, gx, gy, gz = 0.0, 0.0, 0.0, 0.0
         for a in range(4):
             for b in range(4):
-                s, sz = 0.0, 0.0  # the sum along z, and its derivative in z
+                v, dv = 0.0, 0.0  # sum along z first (2x faster than the 64-term sum): with wz, and with dwz
                 for c in range(4):
-                    v = tt[p, m, ix[a], iy[b], iz[c]]
-                    s += wz[c] * v
-                    sz += dz[c] * v
-                tq += wx[a] * wy[b] * s
-                tx += dx[a] * wy[b] * s
-                ty += wx[a] * dy[b] * s
-                tz += wx[a] * wy[b] * sz
-                txy += dx[a] * dy[b] * s
-                txz += dx[a] * wy[b] * sz
-                tyz += wx[a] * dy[b] * sz
-        # Outside the grid the time continues linearly from c with the slope at c:
-        #     T(q) = T(c) + T_x(c) (x - xc) + T_y(c) (y - yc) + T_z(c) (z - zc)
-        # (inside, q = c: the tricubic time). Its gradient by the chain rule: c follows the event along an axis where
-        # the event is inside the grid (xc = x) and stays fixed along an axis where it is outside, so
-        #     dT/dx = T_x(c) + T_xy(c) (y - yc) + T_xz(c) (z - zc)   x inside (c slides along the face)
-        #     dT/dx = T_x(c)                                         x outside (c fixed in x)
-        # and likewise for y and z, as in eikonal2d._lookup.
-        ex, ey, ez = x - xc, y - yc, z - zc
-        t[k] = tq + tx * ex + ty * ey + tz * ez
-        g[k, 0] = (tx + (txy * ey + txz * ez if ex == 0.0 else 0.0)) / h
-        g[k, 1] = (ty + (txy * ex + tyz * ez if ey == 0.0 else 0.0)) / h
-        g[k, 2] = (tz + (txz * ex + tyz * ey if ez == 0.0 else 0.0)) / h
+                    v += wz[c] * tt[p, m, i + a, j + b, l + c]  # node i - 1 is node i of the padded table
+                    dv += dwz[c] * tt[p, m, i + a, j + b, l + c]
+                tk += wx[a] * wy[b] * v
+                gx += dwx[a] * wy[b] * v
+                gy += wx[a] * dwy[b] * v
+                gz += wx[a] * wy[b] * dv
+        t[k] = tk
+        g[k, 0], g[k, 1], g[k, 2] = gx / h, gy / h, gz / h
     return t, g
 
 
@@ -312,7 +293,7 @@ if __name__ == "__main__":
     # slices through the station's nearest node of the table and of its gradient
     sta_ix, sta_iy, sta_iz = np.round((station_loc[0] - eikonal["grid0"]) / h).astype(int)
     for p, ph in enumerate(("p", "s")):
-        T = eikonal["tt"][p, 0]
+        T = eikonal["tt"][p, 0, 1:-1, 1:-1, 1:-1]
         gT = np.gradient(T, h)
         for name, A in ((f"t{ph}", [T[sta_ix, :, :], T[:, sta_iy, :], T[:, :, sta_iz]]),
                         (f"grad_t{ph}", [gT[0][sta_ix, :, :], gT[1][sta_ix, :, :], gT[2][sta_ix, :, :]])):
@@ -322,3 +303,26 @@ if __name__ == "__main__":
                 a.invert_yaxis()
                 a.set_title(f"{name}_{title}")
             plt.savefig(f"{data_path}/slice_{name}_3d.png")
+
+    # the gradient is the derivative of the returned time, inside the grid and beyond every face, edge and corner
+    lo, hi = eikonal["grid0"], eikonal["grid0"] + (np.array(eikonal["shape"]) - 1) * h
+    rng = np.random.default_rng(0)
+    q = rng.uniform(lo - 3, hi + 3, (2000, 3))
+    out = np.any((q < lo) | (q > hi), axis=1)
+    i0 = np.zeros(len(q), int)
+    g = _eval(np.arange(len(q)), i0, i0, q, eikonal)[1]
+    fd = np.column_stack([(_eval(np.arange(len(q)), i0, i0, q + 1e-3 * d, eikonal)[0] - _eval(np.arange(len(q)), i0, i0, q - 1e-3 * d, eikonal)[0]) / 2e-3 for d in np.eye(3)])
+    err = np.linalg.norm(g - fd, axis=1)
+    print(f"gradient vs finite differences: max inside {err[~out].max():.1e}, outside {err[out].max():.1e} s/km")
+    assert err.max() < 1e-5 and np.all(np.linalg.norm(g[out], axis=1) > 0.05)
+
+    # time and gradient continuous across the node planes and the faces of the grid
+    for d in range(3):
+        for x in (lo[d], lo[d] + 5 * h, hi[d]):
+            a = rng.uniform(lo + 1, hi - 1, (100, 3))
+            a[:, d] = x - 1e-7
+            b = a + 2e-7 * np.eye(3)[d]
+            (ta, ga), (tb, gb) = [_eval(np.arange(100), i0[:100], i0[:100], e, eikonal) for e in (a, b)]
+            assert np.abs(tb - ta).max() < 1e-5 and np.abs(gb - ga).max() < 1e-4
+    print("time and gradient continuous across the nodes and the faces")
+
