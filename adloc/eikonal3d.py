@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from numba import njit
 
-from .eikonal2d import MARGIN, MAX_ITER, TOL, _catmull_rom
+from .eikonal2d import MARGIN, MAX_ITER, TOL
 
 ###################################### Eikonal Solver ######################################
 
@@ -190,7 +190,10 @@ def _weights(x, n):
     inside the grid, the edge's value and slope continued as a straight line beyond it."""
     xc = min(max(x, 0.0), n - 1.0)  # the nearest point of the grid
     i = min(int(xc), n - 2)
-    w, dw = _catmull_rom(xc - i)
+    f = xc - i
+    f2, f3 = f * f, f * f * f
+    w = ((-f3 + 2 * f2 - f) / 2, (3 * f3 - 5 * f2 + 2) / 2, (-3 * f3 + 4 * f2 + f) / 2, (f3 - f2) / 2)
+    dw = ((-3 * f2 + 4 * f - 1) / 2, (9 * f2 - 10 * f) / 2, (-9 * f2 + 8 * f + 1) / 2, (3 * f2 - 2 * f) / 2)
     e = x - xc  # zero inside the grid
     return i, (w[0] + dw[0] * e, w[1] + dw[1] * e, w[2] + dw[2] * e, w[3] + dw[3] * e), dw
 
