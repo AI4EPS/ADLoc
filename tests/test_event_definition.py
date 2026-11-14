@@ -54,6 +54,17 @@ def test_event_with_one_phase_is_sampled():
     assert event is not None and event.iloc[0].num_s_picks == 0
 
 
+def test_one_wrong_pick_of_a_phase_is_left_out():
+    """No rule forces a phase into every sample: then the only S pick, when wrong, could not be left out."""
+    picks, stations, config, _ = setup()
+    P, S = picks[picks.phase_type == 0], picks[picks.phase_type == 1]
+    late = S.iloc[:1].assign(phase_time=S.phase_time.iloc[:1] + pd.Timedelta(seconds=5))
+    for n in (5, 6, 8):
+        _, event = locate(pd.concat([P.iloc[:n], late]), stations, {**config, "min_s_score_sum": 0})
+        e = event.iloc[0]
+        assert np.abs(e[["x_km", "y_km", "z_km"]].values.astype(float) - EVENT).max() < 0.2 and (e.num_p_picks, e.num_s_picks) == (n, 0)
+
+
 def test_event_definition_on_the_fitting_picks():
     picks, stations, config, _ = setup()
     weak = picks.iloc[[0, 1, 6, 7, 12, 13]].assign(phase_score=0.31)  # P and S at 3 stations: scores sum to 1.86

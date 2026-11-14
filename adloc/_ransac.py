@@ -452,15 +452,7 @@ class RANSACRegressor(
         # number of data samples
         n_samples = X.shape[0]
         sample_idxs = np.arange(n_samples)
-        # X: idx_sta, type, score, amp. A sample is drawn phase by phase (stratified): each phase gets its share of the
-        # sample, at least one pick, drawn by score. So every trial has P and S when the event has them (depth and
-        # origin time are constrained), with the phase mix of the event, and no trial is spent on a one-phase sample.
-        groups = [np.flatnonzero(X[:, 1] == k) for k in np.unique(X[:, 1])]  # the picks of each phase (0: P, 1: S)
-        sizes = [min_samples]
-        if len(groups) == 2:
-            n0, n1 = len(groups[0]), len(groups[1])
-            m0 = int(np.clip(round(min_samples * n0 / (n0 + n1)), max(1, min_samples - n1), min(n0, min_samples - 1)))
-            sizes = [m0, min_samples - m0]
+        prob = X[:, 2] / np.sum(X[:, 2])  # X: idx_sta, type, score, amp
 
         self.n_trials_ = 0
         max_trials = self.max_trials
@@ -472,8 +464,7 @@ class RANSACRegressor(
 
             # choose random sample set
             # subset_idxs = sample_without_replacement(n_samples, min_samples, random_state=random_state)
-            subset_idxs = np.concatenate([random_state.choice(g, m, replace=False, p=X[g, 2] / X[g, 2].sum())
-                                          for g, m in zip(groups, sizes)])
+            subset_idxs = random_state.choice(sample_idxs, min_samples, replace=False, p=prob)
             X_subset = X[subset_idxs]
             y_subset = y[subset_idxs]
 
