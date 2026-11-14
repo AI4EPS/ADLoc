@@ -35,6 +35,9 @@ def translate_old_config(config):
     return config
 
 
+MAX_REFIT = 5  # passes that mark the fitting picks against the location and locate again
+
+
 def invert(picks, stations, config, estimator, event_index, event_init):
     """
     Earthquake location for a single event using RANSAC.
@@ -209,8 +212,20 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             picks["residual_amplitude"] = 0.0
         return picks, None
 
-    estimator = reg.estimator_
+    estimator = reg.estimator_  # located on the picks that fit the best trial
     inlier_mask = reg.inlier_mask_
+
+    ## The picks that fit were marked against the best trial; the location has since moved. Mark them against the
+    ## location, locate again, and repeat until the marks stop changing (as GaMMA's refit).
+    features = X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values
+    target = X[["t_s", "amp"]].values if has_amp else X[["t_s"]].values
+    for _ in range(MAX_REFIT):
+        residual = np.abs(target - estimator.predict(features)[:, : target.shape[1]])  # (n, 1 or 2): time[, amplitude]
+        fits = ~(residual > MAX_RESIDUAL).any(axis=1)  # a missing (NaN) amplitude never rejects a pick
+        if (fits == inlier_mask).all() or fits.sum() < 4:  # settled, or too few picks left to locate
+            break
+        inlier_mask = fits
+        estimator.fit(features[inlier_mask], target[inlier_mask])
 
     ## Predict travel time
     output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
