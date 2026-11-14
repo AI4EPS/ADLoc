@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from pyproj import Proj
 
+from adloc.gmpe import calc_amp
 from adloc.sacloc2d import ADLoc
 from adloc.utils import invert
 
@@ -63,11 +64,14 @@ def test_unrelated_picks_are_not_an_event():
     assert locate(noise, stations, config)[1] is None
 
 
-def test_amplitude_limit_is_off_with_none():
+def test_amplitudes_judge_only_with_use_amplitude_and_a_limit():
     picks, stations, config, _ = setup()
-    amp = picks.assign(phase_amplitude=-2.0)
-    amp.loc[amp.index[0], "phase_amplitude"] = 3.0  # one pick 5 log10 units off
-    kept, _ = locate(amp, stations, {**config, "max_residual_amplitude": None})
-    assert kept["mask"].all()
-    kept, _ = locate(amp, stations, {**config, "max_residual_amplitude": 1.0})
+    x, y = PROJ(stations.longitude.values, stations.latitude.values)
+    log_amp = calc_amp(2.0, EVENT[None], np.c_[x, y, stations.z_km.values])[:, 0]  # a magnitude 2 at each station
+    amp = picks.assign(phase_amplitude=log_amp[picks.idx_sta.values])
+    amp.loc[amp.index[0], "phase_amplitude"] += 5.0  # one pick 5 log10 units off
+    for extra in ({"use_amplitude": False, "max_residual_amplitude": 1.0}, {"use_amplitude": True, "max_residual_amplitude": None}):
+        kept, event = locate(amp, stations, {**config, **extra, "min_r2": 0, "ransac_min_r2": 0})
+        assert kept["mask"].all() and abs(event.iloc[0].magnitude - 2.0) < 0.5  # no pick rejected; the magnitude is still given
+    kept, _ = locate(amp, stations, {**config, "use_amplitude": True, "max_residual_amplitude": 1.0, "min_r2": 0, "ransac_min_r2": 0})
     assert kept["mask"].sum() == len(amp) - 1

@@ -49,7 +49,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       ransac_min_s_score_sum            or to all the event has when it has less, so a trial has both P and S
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
       max_residual_time                 a pick fits when its travel-time residual is within this (default 1.0 s, as GaMMA)
-      max_residual_amplitude            and its amplitude residual within this (log10); None (default): no limit
+      use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
+                                        judge: they enter R2, and max_residual_amplitude applies
+      max_residual_amplitude            with use_amplitude, a pick fits when its amplitude residual is also within this
+                                        (log10); None (default): no limit
     """
     translate_old_config(config)
     ## sampling rules, capped by what the event has: they choose good trials, they do not decide if the event exists
@@ -89,10 +92,11 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     MIN_PICKS = config.get("min_picks", 5)  # the defaults of the event definition are GaMMA's
     SAMPLE_RATIO = config.get("ransac_sample_ratio", 0.5)
-    # amplitudes, when present, give the magnitude; use_amplitude also puts them in the R2 of a trial
+    # amplitudes, when present, give the magnitude. use_amplitude (default False) also uses them to judge: they enter R2,
+    # and picks beyond max_residual_amplitude (log10; None: no limit) do not fit. The same two settings as GaMMA.
     has_amp = "phase_amplitude" in picks.columns
     if has_amp:
-        max_amp = config.get("max_residual_amplitude")  # log10; None (the default): amplitudes reject no pick, as GaMMA
+        max_amp = config.get("max_residual_amplitude") if config.get("use_amplitude", False) else None
         MAX_RESIDUAL = [config.get("max_residual_time", 1.0), np.inf if max_amp is None else max_amp]
     else:
         MAX_RESIDUAL = config.get("max_residual_time", 1.0)
