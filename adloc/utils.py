@@ -239,10 +239,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         x, y, z, t = estimator.events[0]
         if has_amp:
             mag = estimator.magnitudes[0]
-        ## how well the fitting stations surround the event: the largest gap between their azimuths (deg)
-        sta_xy = np.unique(X[["x_km", "y_km"]].values[inlier_mask], axis=0)  # co-located instruments count once
-        az = np.sort(np.degrees(np.arctan2(sta_xy[:, 0] - x, sta_xy[:, 1] - y)))
-        gap = float(np.diff(np.append(az, az[0] + 360)).max())
+        ## azimuthal gap: the largest angle around the epicentre with no station of a fitting pick
+        dx, dy = (X[["x_km", "y_km"]].values[inlier_mask] - [x, y]).T
+        az = np.sort(np.arctan2(dx, dy))  # station azimuths (rad)
+        gap = np.degrees(np.diff(az, append=az[0] + 2 * np.pi).max())
 
         longitude, latitude = proj(x, y, inverse=True)
 
