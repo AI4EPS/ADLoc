@@ -33,17 +33,18 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     """
     Earthquake location for a single event using RANSAC.
 
-    Two groups of settings. The event definition is GaMMA's, tested here on the picks that fit the location (0 = off):
-      min_picks                         their number
-      min_score_sum                     the sum of their scores
-      min_p_score_sum, min_s_score_sum  the same per phase
-      min_p_picks, min_s_picks          their number per phase
+    Two groups of settings. The event definition is GaMMA's, with GaMMA's defaults, tested here on the picks that fit
+    the location (0 = off):
+      min_picks                         their number (default 5)
+      min_score_sum                     the sum of their scores (default 0.5 * min_picks)
+      min_p_score_sum, min_s_score_sum  the same per phase (default 0.5 each)
+      min_p_picks, min_s_picks          their number per phase (default 0)
     The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
-      ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks
+      ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
       ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
       ransac_min_s_score_sum            or to all the event has when it has less, so a trial has both P and S
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
-      max_residual_time                 a pick fits when its travel-time residual is within this (s)
+      max_residual_time                 a pick fits when its travel-time residual is within this (default 1.0 s, as GaMMA)
     """
     translate_old_config(config)
     ## sampling rules, capped by what the event has: they choose good trials, they do not decide if the event exists
@@ -81,15 +82,15 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         n1 = np.sum(X[X[:, 1] == 1, 2])
         return n0 >= need_p and n1 >= need_s  # enough P and S in the sample
 
-    MIN_PICKS = config["min_picks"]
-    SAMPLE_RATIO = config["ransac_sample_ratio"]
+    MIN_PICKS = config.get("min_picks", 5)  # the defaults of the event definition are GaMMA's
+    SAMPLE_RATIO = config.get("ransac_sample_ratio", 0.5)
     # amplitudes, when present, give the magnitude; use_amplitude also lets them reject picks (here) and events (score)
     has_amp = "phase_amplitude" in picks.columns
     if has_amp:
-        max_amp = config["max_residual_amplitude"] if config.get("use_amplitude", False) else np.inf
-        MAX_RESIDUAL = [config["max_residual_time"], max_amp]
+        max_amp = config.get("max_residual_amplitude", 1.0) if config.get("use_amplitude", False) else np.inf
+        MAX_RESIDUAL = [config.get("max_residual_time", 1.0), max_amp]  # 1.0 s and 1.0 log10, GaMMA's defaults
     else:
-        MAX_RESIDUAL = config["max_residual_time"]
+        MAX_RESIDUAL = config.get("max_residual_time", 1.0)
 
     if "station_term_time_p" not in stations.columns:
         stations["station_term_time_p"] = 0.0
@@ -230,9 +231,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     fit_score, fit_p = X["score"].values[inlier_mask], (X["type"].values == 0)[inlier_mask]
     if (
         len(fit_score) >= MIN_PICKS
-        and fit_score.sum() >= config.get("min_score_sum", 0)
-        and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0)
-        and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0)
+        and fit_score.sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
+        and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0.5)
+        and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0.5)
         and fit_p.sum() >= config.get("min_p_picks", 0)
         and (~fit_p).sum() >= config.get("min_s_picks", 0)
     ):
