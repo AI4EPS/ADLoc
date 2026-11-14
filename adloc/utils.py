@@ -164,16 +164,20 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     ## Location using RANSAC
     num_picks = len(X)
-    ## Fitting only removes picks: an event whose picks do not meet the event definition cannot meet it afterwards
-    is_p = X["type"].values == 0
-    if (
-        num_picks < MIN_PICKS
-        or X["score"].sum() < config.get("min_score_sum", 0.5 * MIN_PICKS)
-        or X["score"].values[is_p].sum() < config.get("min_p_score_sum", 0.5)
-        or X["score"].values[~is_p].sum() < config.get("min_s_score_sum", 0.5)
-        or is_p.sum() < config.get("min_p_picks", 0)
-        or (~is_p).sum() < config.get("min_s_picks", 0)
-    ):
+
+    def is_event(x):
+        """The event definition on a set of picks x (columns type: 0 P, 1 S; score)."""
+        p_score, s_score = x["score"][x["type"] == 0], x["score"][x["type"] == 1]
+        return (
+            len(x) >= MIN_PICKS
+            and x["score"].sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
+            and p_score.sum() >= config.get("min_p_score_sum", 0.5)
+            and s_score.sum() >= config.get("min_s_score_sum", 0.5)
+            and len(p_score) >= config.get("min_p_picks", 0)
+            and len(s_score) >= config.get("min_s_picks", 0)
+        )
+
+    if not is_event(X):  # fitting only removes picks: an event that fails the definition now cannot meet it later
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if has_amp:
@@ -224,16 +228,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask], y=X[["t_s"]].values[inlier_mask]
         )
 
-    ## the event definition, on the picks that fit
-    fit_score, fit_p = X["score"].values[inlier_mask], (X["type"].values == 0)[inlier_mask]
-    if (
-        len(fit_score) >= MIN_PICKS
-        and fit_score.sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
-        and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0.5)
-        and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0.5)
-        and fit_p.sum() >= config.get("min_p_picks", 0)
-        and (~fit_p).sum() >= config.get("min_s_picks", 0)
-    ):
+    inliers = X[inlier_mask]  # the picks that fit the location
+    if is_event(inliers):
         mean_residual_time = np.sum(np.abs(X["t_s"].values - tt) * inlier_mask) / np.sum(inlier_mask)
         if has_amp:
             mean_residual_amp = np.nanmean(np.abs(X["amp"].values - amp)[inlier_mask])  # over picks with an amplitude
@@ -261,8 +257,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "adloc_score": score,
             "adloc_residual_time": mean_residual_time,
             "num_picks": np.sum(inlier_mask),
-            "num_p_picks": int(fit_p.sum()),
-            "num_s_picks": int((~fit_p).sum()),
+            "num_p_picks": int((inliers["type"] == 0).sum()),
+            "num_s_picks": int((inliers["type"] == 1).sum()),
             "azimuthal_gap": gap,
         }
         if has_amp:
