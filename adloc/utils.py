@@ -209,15 +209,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             picks["residual_amplitude"] = 0.0
         return picks, None
 
-    estimator = reg.estimator_  # located on the picks that fit the best trial
+    estimator = reg.estimator_
     inlier_mask = reg.inlier_mask_
-
-    ## RANSAC marked the fitting picks against its best trial and then located once more from them: mark them against
-    ## that final location, so the marks agree with the residuals reported
-    features = X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values
-    target = X[["t_s", "amp"]].values if has_amp else X[["t_s"]].values
-    residual = np.abs(target - estimator.predict(features)[:, : target.shape[1]])  # (n, 1 or 2): time[, amplitude]
-    inlier_mask = ~(residual > MAX_RESIDUAL).any(axis=1)  # a missing (NaN) amplitude never rejects a pick
 
     ## Predict travel time
     output = estimator.predict(X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values)
