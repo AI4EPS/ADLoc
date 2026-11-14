@@ -51,8 +51,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
                                         judge: they enter R2, and max_residual_amplitude applies
     The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped.
-    A sample is drawn from all the picks by score, with no rule on its phases: a pick that every sample must hold
-    could never be left out as wrong.
+    A sample is drawn phase by phase (see _ransac.py): the number of P picks at random by the event's share of P,
+    then the picks of each phase by score. A sample may hold no P or no S, so any pick can be left out as wrong.
       ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
     """
