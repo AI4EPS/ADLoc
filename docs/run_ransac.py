@@ -231,11 +231,7 @@ if __name__ == "__main__":
     # config["max_residual_time"] = 0.2 ## Stanford
     # config["max_residual_amplitude"] = 0.2 ## Stanford
     # config["ransac_min_r2"] = 0.6
-    # config["ransac_min_p_score_sum"] = 1
-    # config["ransac_min_s_score_sum"] = 1
     config["ransac_min_r2"] = 0.5
-    config["ransac_min_s_score_sum"] = 1.5
-    config["ransac_min_p_score_sum"] = 1.5
 
     config["bfgs_bounds"] = (  # x, y in each event's own frame (local limits above)
         (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x

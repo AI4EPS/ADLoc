@@ -42,17 +42,23 @@ def test_event_is_located_with_its_quality_columns():
 def test_sampling_rules_do_not_decide_that_the_event_exists():
     picks, stations, config, _ = setup()
     weak_s = pd.concat([picks[picks.phase_type == 0], picks[picks.phase_type == 1].iloc[:3].assign(phase_score=0.2)])  # 3 S, sum 0.6
-    _, event = locate(weak_s, stations, {**config, "ransac_min_s_score_sum": 1.0})  # no sample can reach 1.0: a trial needs one S
+    _, event = locate(weak_s, stations, config)  # a sample holds an S pick; how strong the S picks are is not its business
     assert event is not None and event.iloc[0].num_s_picks == 3
     _, event = locate(weak_s, stations, {**config, "min_s_score_sum": 1.0})  # the event definition does decide
     assert event is None
 
 
+def test_event_with_one_phase_is_sampled():
+    picks, stations, config, _ = setup()
+    _, event = locate(picks[picks.phase_type == 0], stations, {**config, "min_s_score_sum": 0})  # P only, allowed by the definition
+    assert event is not None and event.iloc[0].num_s_picks == 0
+
+
 def test_event_definition_on_the_fitting_picks():
     picks, stations, config, _ = setup()
     weak = picks.iloc[[0, 1, 6, 7, 12, 13]].assign(phase_score=0.31)  # P and S at 3 stations: scores sum to 1.86
-    assert locate(weak, stations, {**config, "ransac_min_p_score_sum": 0.5, "ransac_min_s_score_sum": 0.5})[1] is None  # default min_score_sum 2.5
-    assert locate(weak, stations, {**config, "ransac_min_p_score_sum": 0.5, "ransac_min_s_score_sum": 0.5, "min_score_sum": 0})[1] is not None
+    assert locate(weak, stations, config)[1] is None  # default min_score_sum 2.5
+    assert locate(weak, stations, {**config, "min_score_sum": 0})[1] is not None
     assert locate(picks.iloc[:4], stations, config)[1] is None  # fewer than min_picks
     assert locate(picks, stations, {**config, "min_p_picks": 13})[1] is None
 

@@ -9,9 +9,8 @@ def test_old_config_is_translated_with_one_warning():
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         translate_old_config(config)
-    assert config == {"min_picks": 5, "ransac_sample_ratio": 0.5, "ransac_min_r2": 0.6,
-                      "ransac_min_p_score_sum": 1.5, "ransac_min_s_score_sum": 1.5}
-    assert len(w) == 1 and "min_p_picks -> ransac_min_p_score_sum" in str(w[0].message)
+    assert config == {"min_picks": 5, "ransac_sample_ratio": 0.5, "ransac_min_r2": 0.6}  # the sample score sums are dropped
+    assert len(w) == 1 and "min_p_picks and min_s_picks (sample score sums) are no longer used" in str(w[0].message)
 
 
 def test_new_config_is_left_alone():

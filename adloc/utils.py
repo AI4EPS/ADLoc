@@ -15,24 +15,23 @@ from pyproj import Proj
 from ._ransac import RANSACRegressor
 
 
-OLD_NAMES = {  # names before 1.2
-    "min_picks_ratio": "ransac_sample_ratio",
-    "min_score": "ransac_min_r2",
-    "min_p_picks": "ransac_min_p_score_sum",  # these two were score sums of a sample; the names now mean counts
-    "min_s_picks": "ransac_min_s_score_sum",
-}
+OLD_NAMES = {"min_picks_ratio": "ransac_sample_ratio", "min_score": "ransac_min_r2"}  # names before 1.2
 
 
 def translate_old_config(config):
     """Rename the settings from before 1.2 in place, so old configs keep running; one warning lists the changes.
-    A config is old when it has min_picks_ratio or min_score, which every config before 1.2 had; only then are
-    min_p_picks and min_s_picks read with their old meaning. A new name, when also set, wins."""
-    if "min_picks_ratio" not in config and "min_score" not in config:
-        return config
+    A config is old when it has min_picks_ratio or min_score, which every config before 1.2 had. Its min_p_picks and
+    min_s_picks were score sums that each RANSAC sample had to reach; that rule is gone (a sample now only holds each
+    phase the event has), so they are dropped. In a new config they are counts on the fitting picks.
+    A new name, when also set, wins."""
     old = [k for k in OLD_NAMES if k in config]
+    if not old:
+        return config
     for k in old:
         config.setdefault(OLD_NAMES[k], config.pop(k))
-    warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {OLD_NAMES[k]}" for k in old), stacklevel=3)
+    dropped = [k for k in ("min_p_picks", "min_s_picks") if config.pop(k, None) is not None]
+    note = "; " + " and ".join(dropped) + " (sample score sums) are no longer used" if dropped else ""
+    warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {OLD_NAMES[k]}" for k in old) + note, stacklevel=3)
     return config
 
 
@@ -51,10 +50,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       max_residual_amplitude            amplitude (log10), with use_amplitude; None (default): no limit
       use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
                                         judge: they enter R2, and max_residual_amplitude applies
-    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
+    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped.
+    A trial's sample holds each phase the event has (P and S), so that depth and origin time are constrained:
       ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
-      ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
-      ransac_min_s_score_sum            or, for an event that has less, to its best pick of that phase
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
     """
 
@@ -79,9 +77,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         """
         # n0 = np.sum(X[:, 1] == 0)  # P
         # n1 = np.sum(X[:, 1] == 1)  # S
-        n0 = np.sum(X[X[:, 1] == 0, 2])
-        n1 = np.sum(X[X[:, 1] == 1, 2])
-        return n0 >= need_p and n1 >= need_s  # enough P and S in the sample
+        return all((X[:, 1] == k).any() for k in phases)  # the sample holds each phase the event has
 
     MIN_PICKS = config.get("min_picks", 5)  # the defaults of the event definition are GaMMA's
     SAMPLE_RATIO = config.get("ransac_sample_ratio", 0.5)
@@ -175,14 +171,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     #     estimator.fit(X[["idx_sta", "type", "score"]].values, y=X[["t_s"]].values)
     # inlier_mask = np.ones(len(X)).astype(bool)
 
-    ## Sampling rules that an event can meet: they choose good trials, they do not decide whether the event exists.
-    ## An event with less of a phase than the rule asks is sampled so that a trial has its best pick of that phase.
-    need = {}
-    for k, name in ((0, "ransac_min_p_score_sum"), (1, "ransac_min_s_score_sum")):
-        score = X["score"].values[X["type"].values == k]
-        want = config.get(name, 1.0)
-        need[k] = (want if score.sum() >= want else score.max(initial=0)) - 1e-9
-    need_p, need_s = need[0], need[1]
+    phases = np.unique(X["type"].values)  # 0: P, 1: S
 
     ## Location using RANSAC
     num_picks = len(X)
