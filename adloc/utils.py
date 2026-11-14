@@ -49,7 +49,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       ransac_min_s_score_sum            or to all the event has when it has less, so a trial has both P and S
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
       max_residual_time                 a pick fits when its travel-time residual is within this (default 1.0 s, as GaMMA)
-      max_residual_amplitude            and, when set, its amplitude residual within this (log10); not set: no limit
+      max_residual_amplitude            and its amplitude residual within this (log10); None (default): no limit
     """
     translate_old_config(config)
     ## sampling rules, capped by what the event has: they choose good trials, they do not decide if the event exists
@@ -92,8 +92,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     # amplitudes, when present, give the magnitude; use_amplitude also puts them in the R2 of a trial
     has_amp = "phase_amplitude" in picks.columns
     if has_amp:
-        # a set max_residual_amplitude (log10) is used; not set, amplitudes reject no pick (as GaMMA)
-        MAX_RESIDUAL = [config.get("max_residual_time", 1.0), config.get("max_residual_amplitude", np.inf)]
+        max_amp = config.get("max_residual_amplitude")  # log10; None (the default): amplitudes reject no pick, as GaMMA
+        MAX_RESIDUAL = [config.get("max_residual_time", 1.0), np.inf if max_amp is None else max_amp]
     else:
         MAX_RESIDUAL = config.get("max_residual_time", 1.0)
 
@@ -251,6 +251,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         x, y, z, t = estimator.events[0]
         if has_amp:
             mag = estimator.magnitudes[0]
+        ## how well the fitting stations surround the event: the largest gap between their azimuths (deg)
+        sta_xy = np.unique(X[["x_km", "y_km"]].values[inlier_mask], axis=0)  # co-located instruments count once
+        az = np.sort(np.degrees(np.arctan2(sta_xy[:, 0] - x, sta_xy[:, 1] - y)))
+        gap = float(np.diff(np.append(az, az[0] + 360)).max())
 
         longitude, latitude = proj(x, y, inverse=True)
 
@@ -268,6 +272,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "num_picks": np.sum(inlier_mask),
             "num_p_picks": int(fit_p.sum()),
             "num_s_picks": int((~fit_p).sum()),
+            "num_stations": len(sta_xy),
+            "azimuthal_gap": gap,
         }
         if has_amp:
             event["magnitude"] = mag
