@@ -230,10 +230,10 @@ if __name__ == "__main__":
     # config["max_residual_time"] = 0.2  ## Forge
     # config["max_residual_time"] = 0.2 ## Stanford
     # config["max_residual_amplitude"] = 0.2 ## Stanford
-    # config["min_r2"] = 0.6
+    # config["ransac_min_r2"] = 0.6
     # config["ransac_min_p_score_sum"] = 1
     # config["ransac_min_s_score_sum"] = 1
-    config["min_r2"] = config["ransac_min_r2"] = 0.5
+    config["ransac_min_r2"] = 0.5
     config["ransac_min_s_score_sum"] = 1.5
     config["ransac_min_p_score_sum"] = 1.5
 

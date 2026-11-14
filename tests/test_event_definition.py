@@ -41,16 +41,16 @@ def test_event_is_located_with_its_quality_columns():
 
 def test_sampling_rules_do_not_decide_that_the_event_exists():
     picks, stations, config, _ = setup()
-    one_s = pd.concat([picks[picks.phase_type == 0], picks[picks.phase_type == 1].iloc[:1].assign(phase_score=0.6)])  # S scores sum to 0.6
-    _, event = locate(one_s, stations, {**config, "ransac_min_s_score_sum": 1.0})  # no sample can reach 1.0: capped at 0.6
-    assert event is not None and event.iloc[0].num_s_picks == 1
-    _, event = locate(one_s, stations, {**config, "min_s_score_sum": 1.0})  # the event definition does decide
+    weak_s = pd.concat([picks[picks.phase_type == 0], picks[picks.phase_type == 1].iloc[:3].assign(phase_score=0.2)])  # 3 S, sum 0.6
+    _, event = locate(weak_s, stations, {**config, "ransac_min_s_score_sum": 1.0})  # no sample can reach 1.0: a trial needs one S
+    assert event is not None and event.iloc[0].num_s_picks == 3
+    _, event = locate(weak_s, stations, {**config, "min_s_score_sum": 1.0})  # the event definition does decide
     assert event is None
 
 
 def test_event_definition_on_the_fitting_picks():
     picks, stations, config, _ = setup()
-    weak = picks.iloc[[0, 1, 6, 7, 12, 13, 18, 19]].iloc[:6].assign(phase_score=0.31)  # P and S at 3 stations: scores sum to 1.86
+    weak = picks.iloc[[0, 1, 6, 7, 12, 13]].assign(phase_score=0.31)  # P and S at 3 stations: scores sum to 1.86
     assert locate(weak, stations, {**config, "ransac_min_p_score_sum": 0.5, "ransac_min_s_score_sum": 0.5})[1] is None  # default min_score_sum 2.5
     assert locate(weak, stations, {**config, "ransac_min_p_score_sum": 0.5, "ransac_min_s_score_sum": 0.5, "min_score_sum": 0})[1] is not None
     assert locate(picks.iloc[:4], stations, config)[1] is None  # fewer than min_picks
@@ -71,7 +71,7 @@ def test_amplitudes_judge_only_with_use_amplitude_and_a_limit():
     amp = picks.assign(phase_amplitude=log_amp[picks.idx_sta.values])
     amp.loc[amp.index[0], "phase_amplitude"] += 5.0  # one pick 5 log10 units off
     for extra in ({"use_amplitude": False, "max_residual_amplitude": 1.0}, {"use_amplitude": True, "max_residual_amplitude": None}):
-        kept, event = locate(amp, stations, {**config, **extra, "min_r2": 0, "ransac_min_r2": 0})
+        kept, event = locate(amp, stations, {**config, **extra, "ransac_min_r2": 0})
         assert kept["mask"].all() and abs(event.iloc[0].magnitude - 2.0) < 0.5  # no pick rejected; the magnitude is still given
-    kept, _ = locate(amp, stations, {**config, "use_amplitude": True, "max_residual_amplitude": 1.0, "min_r2": 0, "ransac_min_r2": 0})
+    kept, _ = locate(amp, stations, {**config, "use_amplitude": True, "max_residual_amplitude": 1.0, "ransac_min_r2": 0})
     assert kept["mask"].sum() == len(amp) - 1

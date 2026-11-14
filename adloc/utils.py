@@ -15,19 +15,24 @@ from pyproj import Proj
 from ._ransac import RANSACRegressor
 
 
-OLD_NAMES = {"min_picks_ratio": ["ransac_sample_ratio"], "min_score": ["ransac_min_r2", "min_r2"]}  # names before 1.2
+OLD_NAMES = {  # names before 1.2
+    "min_picks_ratio": "ransac_sample_ratio",
+    "min_score": "ransac_min_r2",
+    "min_p_picks": "ransac_min_p_score_sum",  # these two were score sums of a sample; the names now mean counts
+    "min_s_picks": "ransac_min_s_score_sum",
+}
 
 
 def translate_old_config(config):
     """Rename the settings from before 1.2 in place, so old configs keep running; one warning lists the changes.
-    A new name, when also set, wins."""
+    A config is old when it has min_picks_ratio or min_score, which every config before 1.2 had; only then are
+    min_p_picks and min_s_picks read with their old meaning. A new name, when also set, wins."""
+    if "min_picks_ratio" not in config and "min_score" not in config:
+        return config
     old = [k for k in OLD_NAMES if k in config]
     for k in old:
-        v = config.pop(k)
-        for new in OLD_NAMES[k]:
-            config.setdefault(new, v)
-    if old:
-        warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {' and '.join(OLD_NAMES[k])}" for k in old), stacklevel=3)
+        config.setdefault(OLD_NAMES[k], config.pop(k))
+    warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {OLD_NAMES[k]}" for k in old), stacklevel=3)
     return config
 
 
@@ -41,24 +46,17 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       min_score_sum                     the sum of their scores (default 0.5 * min_picks)
       min_p_score_sum, min_s_score_sum  the same per phase (default 0.5 each)
       min_p_picks, min_s_picks          their number per phase (default 0)
-    and the location must explain their arrival times:
-      min_r2                            R2 of the travel-time fit on the fitting picks (default 0.5)
-    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
-      ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
-      ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
-      ransac_min_s_score_sum            or to all the event has when it has less, so a trial has both P and S
-      ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
-      max_residual_time                 a pick fits when its travel-time residual is within this (default 1.0 s, as GaMMA)
+    A pick fits when its residuals are within:
+      max_residual_time                 travel time (default 1.0 s)
+      max_residual_amplitude            amplitude (log10), with use_amplitude; None (default): no limit
       use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
                                         judge: they enter R2, and max_residual_amplitude applies
-      max_residual_amplitude            with use_amplitude, a pick fits when its amplitude residual is also within this
-                                        (log10); None (default): no limit
+    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
+      ransac_sample_ratio               a trial is located from max(min_picks, this * picks) random picks (default 0.5)
+      ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
+      ransac_min_s_score_sum            or, for an event that has less, to its best pick of that phase
+      ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
     """
-    translate_old_config(config)
-    ## sampling rules, capped by what the event has: they choose good trials, they do not decide if the event exists
-    is_p = picks["phase_type"].isin([0, "P"]).values
-    need_p = min(config.get("ransac_min_p_score_sum", 1.0), picks["phase_score"].values[is_p].sum()) - 1e-9
-    need_s = min(config.get("ransac_min_s_score_sum", 1.0), picks["phase_score"].values[~is_p].sum()) - 1e-9
 
     def is_model_valid(estimator, X, y):
         """
@@ -66,11 +64,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         """
         # n0 = np.sum(X[:, 1] == 0)  # P
         # n1 = np.sum(X[:, 1] == 1)  # S
-        n0 = np.sum(X[X[:, 1] == 0, 2])
-        n1 = np.sum(X[X[:, 1] == 1, 2])
-        if not (n0 >= need_p and n1 >= need_s):
-            return False
-
         if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
             return False
 
@@ -182,6 +175,15 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     #     estimator.fit(X[["idx_sta", "type", "score"]].values, y=X[["t_s"]].values)
     # inlier_mask = np.ones(len(X)).astype(bool)
 
+    ## Sampling rules that an event can meet: they choose good trials, they do not decide whether the event exists.
+    ## An event with less of a phase than the rule asks is sampled so that a trial has its best pick of that phase.
+    need = {}
+    for k, name in ((0, "ransac_min_p_score_sum"), (1, "ransac_min_s_score_sum")):
+        score = X["score"].values[X["type"].values == k]
+        want = config.get(name, 1.0)
+        need[k] = (want if score.sum() >= want else score.max(initial=0)) - 1e-9
+    need_p, need_s = need[0], need[1]
+
     ## Location using RANSAC
     num_picks = len(X)
     if num_picks < max(MIN_PICKS, int(SAMPLE_RATIO * num_picks)):
@@ -239,8 +241,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     ## the event definition, on the picks that fit
     fit_score, fit_p = X["score"].values[inlier_mask], (X["type"].values == 0)[inlier_mask]
     if (
-        score >= config.get("min_r2", 0.5)  # the location explains the arrival times: unrelated picks do not pass
-        and len(fit_score) >= MIN_PICKS
+        len(fit_score) >= MIN_PICKS
         and fit_score.sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
         and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0.5)
         and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0.5)
