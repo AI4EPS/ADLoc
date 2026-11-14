@@ -3,6 +3,7 @@ import multiprocessing as mp
 import os
 import pickle
 import tempfile
+import warnings
 from contextlib import contextmanager, nullcontext
 
 import numpy as np
@@ -14,9 +15,46 @@ from pyproj import Proj
 from ._ransac import RANSACRegressor
 
 
+OLD_NAMES = {"min_picks_ratio": "ransac_sample_ratio", "min_score": "ransac_min_r2"}  # names before 1.2
+
+
+def translate_old_config(config):
+    """Rename the settings from before 1.2 in place, so old configs keep running; one warning lists the changes.
+    A config is old when it has min_picks_ratio or min_score, which every config before 1.2 had. Its min_p_picks and
+    min_s_picks were score sums that each RANSAC sample had to reach; that rule is gone, so they
+    are dropped. In a new config they are counts on the fitting picks.
+    A new name, when also set, wins."""
+    old = [k for k in OLD_NAMES if k in config]
+    if not old:
+        return config
+    for k in old:
+        config.setdefault(OLD_NAMES[k], config.pop(k))
+    dropped = [k for k in ("min_p_picks", "min_s_picks") if config.pop(k, None) is not None]
+    note = "; " + " and ".join(dropped) + " (sample score sums) are no longer used" if dropped else ""
+    warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {OLD_NAMES[k]}" for k in old) + note, stacklevel=3)
+    return config
+
+
 def invert(picks, stations, config, estimator, event_index, event_init):
     """
     Earthquake location for a single event using RANSAC.
+
+    Two groups of settings. The event definition is GaMMA's, with GaMMA's defaults, tested here on the picks that fit
+    the location (0 = off):
+      min_picks                         their number (default 5)
+      min_score_sum                     the sum of their scores (default 0.5 * min_picks)
+      min_p_score_sum, min_s_score_sum  the same per phase (default 0.5 each)
+      min_p_picks, min_s_picks          their number per phase (default 0)
+    A pick fits when its residuals are within:
+      max_residual_time                 travel time (default 1.0 s)
+      max_residual_amplitude            amplitude (log10), with use_amplitude; None (default): no limit
+      use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
+                                        judge: they enter R2, and max_residual_amplitude applies
+    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped.
+    A sample is drawn phase by phase (see _ransac.py): the number of P picks at random by the event's share of P,
+    then the picks of each phase by score. A sample may hold no P or no S, so any pick can be left out as wrong.
+      ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
+      ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
     """
 
     def is_model_valid(estimator, X, y):
@@ -25,39 +63,24 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         """
         # n0 = np.sum(X[:, 1] == 0)  # P
         # n1 = np.sum(X[:, 1] == 1)  # S
-        n0 = np.sum(X[X[:, 1] == 0, 2])
-        n1 = np.sum(X[X[:, 1] == 1, 2])
-        if not (n0 >= config["min_p_picks"] and n1 >= config["min_s_picks"]):
-            return False
-
         if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
             return False
 
-        if estimator.score(X, y) < config["min_score"]:
+        if estimator.score(X, y) < config.get("ransac_min_r2", 0.5):
             return False
 
         return True
 
-    def is_data_valid(X, y):
-        """
-        X: idx_sta, type, score, amp
-        y: t_s
-        """
-        # n0 = np.sum(X[:, 1] == 0)  # P
-        # n1 = np.sum(X[:, 1] == 1)  # S
-        n0 = np.sum(X[X[:, 1] == 0, 2])
-        n1 = np.sum(X[X[:, 1] == 1, 2])
-        return n0 >= config["min_p_picks"] and n1 >= config["min_s_picks"]  # At least min P and S picks
-
-    MIN_PICKS = config["min_picks"]
-    MIN_PICKS_RATIO = config["min_picks_ratio"]
-    # amplitudes, when present, give the magnitude; use_amplitude also lets them reject picks (here) and events (score)
+    MIN_PICKS = config.get("min_picks", 5)  # the defaults of the event definition are GaMMA's
+    SAMPLE_RATIO = config.get("ransac_sample_ratio", 0.5)
+    # amplitudes, when present, give the magnitude. use_amplitude (default False) also uses them to judge: they enter R2,
+    # and picks beyond max_residual_amplitude (log10; None: no limit) do not fit. The same two settings as GaMMA.
     has_amp = "phase_amplitude" in picks.columns
     if has_amp:
-        max_amp = config["max_residual_amplitude"] if config.get("use_amplitude", False) else np.inf
-        MAX_RESIDUAL = [config["max_residual_time"], max_amp]
+        max_amp = config.get("max_residual_amplitude") if config.get("use_amplitude", False) else None
+        MAX_RESIDUAL = [config.get("max_residual_time", 1.0), np.inf if max_amp is None else max_amp]
     else:
-        MAX_RESIDUAL = config["max_residual_time"]
+        MAX_RESIDUAL = config.get("max_residual_time", 1.0)
 
     if "station_term_time_p" not in stations.columns:
         stations["station_term_time_p"] = 0.0
@@ -142,7 +165,20 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     ## Location using RANSAC
     num_picks = len(X)
-    if num_picks < max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)):
+
+    def is_event(x):
+        """The event definition on a set of picks x (columns type: 0 P, 1 S; score)."""
+        p_score, s_score = x["score"][x["type"] == 0], x["score"][x["type"] == 1]
+        return (
+            len(x) >= MIN_PICKS
+            and x["score"].sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
+            and p_score.sum() >= config.get("min_p_score_sum", 0.5)
+            and s_score.sum() >= config.get("min_s_score_sum", 0.5)
+            and len(p_score) >= config.get("min_p_picks", 0)
+            and len(s_score) >= config.get("min_s_picks", 0)
+        )
+
+    if not is_event(X):  # fitting only removes picks: an event that fails the definition now cannot meet it later
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if has_amp:
@@ -152,11 +188,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     reg = RANSACRegressor(
         estimator=estimator,
         random_state=0,
-        min_samples=max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks)),
+        min_samples=max(MIN_PICKS, int(SAMPLE_RATIO * num_picks)),
         # residual_threshold=MAX_RESIDUAL * (1.0 - np.exp(-rstd / 60.0)),  # not sure which one is better
         residual_threshold=MAX_RESIDUAL,
         is_model_valid=is_model_valid,
-        is_data_valid=is_data_valid,
     )
     try:
         if has_amp:
@@ -194,7 +229,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask], y=X[["t_s"]].values[inlier_mask]
         )
 
-    if (np.sum(inlier_mask) >= MIN_PICKS) and (score >= config["min_score"]):
+    inliers = X[inlier_mask]  # the picks that fit the location
+    if is_event(inliers):
         mean_residual_time = np.sum(np.abs(X["t_s"].values - tt) * inlier_mask) / np.sum(inlier_mask)
         if has_amp:
             mean_residual_amp = np.nanmean(np.abs(X["amp"].values - amp)[inlier_mask])  # over picks with an amplitude
@@ -203,6 +239,10 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         x, y, z, t = estimator.events[0]
         if has_amp:
             mag = estimator.magnitudes[0]
+        ## azimuthal gap: the largest angle around the epicentre with no station of a fitting pick
+        dx, dy = (X[["x_km", "y_km"]].values[inlier_mask] - [x, y]).T
+        az = np.sort(np.arctan2(dx, dy))  # station azimuths (rad)
+        gap = np.degrees(np.diff(az, append=az[0] + 2 * np.pi).max())
 
         longitude, latitude = proj(x, y, inverse=True)
 
@@ -218,6 +258,9 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "adloc_score": score,
             "adloc_residual_time": mean_residual_time,
             "num_picks": np.sum(inlier_mask),
+            "num_p_picks": int((inliers["type"] == 0).sum()),
+            "num_s_picks": int((inliers["type"] == 1).sum()),
+            "azimuthal_gap": gap,
         }
         if has_amp:
             event["magnitude"] = mag
@@ -239,7 +282,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
 
     # import matplotlib.pyplot as plt
 
-    # print(f"{max(MIN_PICKS, int(MIN_PICKS_RATIO * num_picks))=}")
+    # print(f"{max(MIN_PICKS, int(SAMPLE_RATIO * num_picks))=}")
     # print(f"{MAX_RESIDUAL=}")
     # fig, ax = plt.subplots(1, 2, squeeze=False, figsize=(7, 4))
     # event = estimator.events[0]
@@ -302,6 +345,7 @@ def _invert_job(picks, stations, event_index, event_init):
 
 
 def invert_location(picks, stations, config, estimator, events_init=None, iter=0):
+    translate_old_config(config)  # here, so the warning comes once and not from every worker
 
     if "ncpu" in config:
         NCPU = config["ncpu"]
@@ -379,6 +423,7 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
 
 
 def invert_location_iter(picks, stations, config, estimator, events_init=None, iter=0):
+    translate_old_config(config)  # here, so the warning comes once and not from every worker
 
     events_inverted = []
     picks_inverted = []
