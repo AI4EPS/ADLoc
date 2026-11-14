@@ -157,7 +157,7 @@ def init_eikonal3d(config, stations):
     model {"Z", "P", "S"} read at absolute depth, on a grid that holds the region and the stations with MARGIN cells
     beyond (nodes on multiples of h, as in eikonal2d), or arrays (nx, ny, nz) on their own grid of first node grid0_km
     (as an ADTomo model). stations: x_km, y_km, z_km, in the order of the station indices. Events kept inside the region
-    are looked up inside the grid; beyond it, see _lookup.
+    are looked up inside the grid; beyond it, see _tricubic.
     """
     h = config["h"]
     sta = np.asarray(stations[["x_km", "y_km", "z_km"]], dtype=float)
@@ -184,46 +184,83 @@ def init_eikonal3d(config, stations):
 
 
 @njit
-def _lookup(tt, iph, ista, q, grid0, h):
-    """Travel time and its gradient w.r.t. the event at q (n, 3) (km) from the tables [phase iph, station ista]: the
-    trilinear interpolation of the table and its exact derivative. Outside the grid the edge cell's trilinear form
-    continues, as in eikonal2d._lookup: the time stays continuous and its gradient is its exact derivative, never zero.
-    """
+def _node(tt, p, m, a, b, c, nx, ny, nz):
+    """Table value at node (a, b, c), one node beyond the grid at most: the linear continuation beyond each edge."""
+    if a < 0:
+        return 2.0 * _node(tt, p, m, 0, b, c, nx, ny, nz) - _node(tt, p, m, 1, b, c, nx, ny, nz)
+    if a > nx - 1:
+        return 2.0 * _node(tt, p, m, nx - 1, b, c, nx, ny, nz) - _node(tt, p, m, nx - 2, b, c, nx, ny, nz)
+    if b < 0:
+        return 2.0 * _node(tt, p, m, a, 0, c, nx, ny, nz) - _node(tt, p, m, a, 1, c, nx, ny, nz)
+    if b > ny - 1:
+        return 2.0 * _node(tt, p, m, a, ny - 1, c, nx, ny, nz) - _node(tt, p, m, a, ny - 2, c, nx, ny, nz)
+    if c < 0:
+        return 2.0 * tt[p, m, a, b, 0] - tt[p, m, a, b, 1]
+    if c > nz - 1:
+        return 2.0 * tt[p, m, a, b, nz - 1] - tt[p, m, a, b, nz - 2]
+    return tt[p, m, a, b, c]
+
+
+@njit
+def _catmull_rom(f):
+    """Weights of nodes -1, 0, 1, 2 at fraction f in [0, 1], and their derivatives in f."""
+    f2, f3 = f * f, f * f * f
+    w = ((-f3 + 2 * f2 - f) / 2, (3 * f3 - 5 * f2 + 2) / 2, (-3 * f3 + 4 * f2 + f) / 2, (f3 - f2) / 2)
+    d = ((-3 * f2 + 4 * f - 1) / 2, (9 * f2 - 10 * f) / 2, (-9 * f2 + 8 * f + 1) / 2, (3 * f2 - 2 * f) / 2)
+    return w, d
+
+
+@njit
+def _tricubic(tt, iph, ista, q, grid0, h):
+    """Time and its exact gradient w.r.t. the event at q (n, 3) (km) of the tricubic (Catmull-Rom) interpolant of
+    tables tt (phase, station, nx, ny, nz): the 3-D form of eikonal2d._bicubic, where the continuation beyond the grid
+    is derived."""
     n = q.shape[0]
     nx, ny, nz = tt.shape[2], tt.shape[3], tt.shape[4]
     t = np.empty(n)
     g = np.empty((n, 3))
     for k in range(n):
         p, m = iph[k], ista[k]
-        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h
-        i = min(max(int(np.floor(x)), 0), nx - 2)
-        j = min(max(int(np.floor(y)), 0), ny - 2)
-        l = min(max(int(np.floor(z)), 0), nz - 2)
-        fx, fy, fz = x - i, y - j, z - l
-        tk, gx, gy, gz = 0.0, 0.0, 0.0, 0.0
-        for a in range(2):
-            wx, sx = (fx, 1.0) if a else (1.0 - fx, -1.0)  # weight and its derivative along x
-            for b in range(2):
-                wy, sy = (fy, 1.0) if b else (1.0 - fy, -1.0)
-                for c in range(2):
-                    wz, sz = (fz, 1.0) if c else (1.0 - fz, -1.0)
-                    v = tt[p, m, i + a, j + b, l + c]
-                    tk += wx * wy * wz * v
-                    gx += sx * wy * wz * v
-                    gy += wx * sy * wz * v
-                    gz += wx * wy * sz * v
-        t[k] = tk
-        g[k, 0], g[k, 1], g[k, 2] = gx / h, gy / h, gz / h
+        x, y, z = (q[k, 0] - grid0[0]) / h, (q[k, 1] - grid0[1]) / h, (q[k, 2] - grid0[2]) / h  # event in grid units
+        xc, yc, zc = min(max(x, 0.0), nx - 1.0), min(max(y, 0.0), ny - 1.0), min(max(z, 0.0), nz - 1.0)  # c: the nearest grid point
+        i, j, l = min(int(xc), nx - 2), min(int(yc), ny - 2), min(int(zc), nz - 2)
+        wx, dwx = _catmull_rom(xc - i)
+        wy, dwy = _catmull_rom(yc - j)
+        wz, dwz = _catmull_rom(zc - l)
+        # the 64 nodes are in the grid: read them directly (5x faster than 64 calls of _node)
+        inside = 1 <= i <= nx - 3 and 1 <= j <= ny - 3 and 1 <= l <= nz - 3
+        tq, tx, ty, tz, txy, txz, tyz = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # T, its gradient and cross derivatives at c
+        for a in range(4):
+            for b in range(4):
+                v, vz = 0.0, 0.0  # the sums along z first (the 64-term sums are 3x slower): with wz, and with dwz
+                for c in range(4):
+                    ia, jb, lc = i - 1 + a, j - 1 + b, l - 1 + c
+                    node = tt[p, m, ia, jb, lc] if inside else _node(tt, p, m, ia, jb, lc, nx, ny, nz)
+                    v += wz[c] * node
+                    vz += dwz[c] * node
+                tq += wx[a] * wy[b] * v
+                tx += dwx[a] * wy[b] * v
+                ty += wx[a] * dwy[b] * v
+                tz += wx[a] * wy[b] * vz
+                txy += dwx[a] * dwy[b] * v
+                txz += dwx[a] * wy[b] * vz
+                tyz += wx[a] * dwy[b] * vz
+        # T(q) = T(c) + grad T(c) . (q - c); along an axis where the event is inside the grid c follows it (cross terms)
+        ex, ey, ez = x - xc, y - yc, z - zc
+        t[k] = tq + tx * ex + ty * ey + tz * ez
+        g[k, 0] = (tx + (txy * ey + txz * ez if ex == 0.0 else 0.0)) / h
+        g[k, 1] = (ty + (txy * ex + tyz * ez if ey == 0.0 else 0.0)) / h
+        g[k, 2] = (tz + (txz * ex + tyz * ey if ez == 0.0 else 0.0)) / h
     return t, g
 
 
-def _eval(event_index, station_index, phase_type, events, eikonal):
+def traveltime_grad(event_index, station_index, phase_type, events, eikonal):
     """Travel times (n,) and gradients w.r.t. the event (n, 3) for events[event_index] at stations station_index."""
     ista = np.asarray(station_index).astype(np.int64)
     n = len(ista)
     q = np.ascontiguousarray(np.asarray(events, dtype=float)[np.broadcast_to(np.asarray(event_index), (n,))][:, :3])
     iph = np.broadcast_to(np.asarray(phase_type), (n,)).astype(np.int64)  # 0 (P) or 1 (S)
-    return _lookup(eikonal["tt"], iph, ista, q, eikonal["grid0"], eikonal["h"])
+    return _tricubic(eikonal["tt"], iph, ista, q, eikonal["grid0"], eikonal["h"])
 
 
 def traveltime(event_index, station_index, phase_type, events, stations, eikonal):
@@ -235,12 +272,12 @@ def traveltime(event_index, station_index, phase_type, events, stations, eikonal
     stations: [K, 3], unused: the station locations are those the tables were built for (eikonal["station_loc"])
     eikonal: dict from init_eikonal3d
     """
-    return _eval(event_index, station_index, phase_type, events, eikonal)[0].astype(np.float32)
+    return traveltime_grad(event_index, station_index, phase_type, events, eikonal)[0].astype(np.float32)
 
 
 def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):
     """Gradient (N, 3) of the travel times w.r.t. the event location; arguments as in traveltime."""
-    return _eval(event_index, station_index, phase_type, events, eikonal)[1]
+    return traveltime_grad(event_index, station_index, phase_type, events, eikonal)[1]
 
 
 if __name__ == "__main__":
@@ -292,3 +329,24 @@ if __name__ == "__main__":
                 a.invert_yaxis()
                 a.set_title(f"{name}_{title}")
             plt.savefig(f"{data_path}/slice_{name}_3d.png")
+
+    # the gradient is the derivative of the returned time, inside the grid and beyond every face, edge and corner
+    lo, hi = eikonal["grid0"], eikonal["grid0"] + (np.array(eikonal["shape"]) - 1) * h
+    rng = np.random.default_rng(0)
+    q = rng.uniform(lo - 3, hi + 3, (2000, 3))
+    out = np.any((q < lo) | (q > hi), axis=1)
+    k, i0 = np.arange(len(q)), np.zeros(len(q), int)
+    g = traveltime_grad(k, i0, i0, q, eikonal)[1]
+    fd = np.column_stack([(traveltime_grad(k, i0, i0, q + 1e-3 * d, eikonal)[0] - traveltime_grad(k, i0, i0, q - 1e-3 * d, eikonal)[0]) / 2e-3 for d in np.eye(3)])
+    err = np.linalg.norm(g - fd, axis=1)
+    print(f"gradient vs finite differences: max inside {err[~out].max():.1e}, outside {err[out].max():.1e} s/km")
+    assert err.max() < 1e-5 and np.all(np.linalg.norm(g[out], axis=1) > 0.05)
+
+    # time and gradient continuous across the node planes and the faces of the grid
+    for d in range(3):
+        for x in (lo[d], lo[d] + 5 * h, hi[d]):
+            a = rng.uniform(lo + 1, hi - 1, (100, 3))
+            a[:, d] = x - 1e-7
+            (ta, ga), (tb, gb) = [traveltime_grad(k[:100], i0[:100], i0[:100], e, eikonal) for e in (a, a + 2e-7 * np.eye(3)[d])]
+            assert np.abs(tb - ta).max() < 1e-5 and np.abs(gb - ga).max() < 1e-4
+    print("time and gradient continuous across the nodes and the faces")
