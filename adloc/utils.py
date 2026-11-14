@@ -15,12 +15,7 @@ from pyproj import Proj
 from ._ransac import RANSACRegressor
 
 
-OLD_NAMES = {  # names before 1.2, which read as other things (counts, a pick score, a threshold on the event)
-    "min_picks_ratio": "ransac_sample_ratio",
-    "min_p_picks": "min_p_score_sum",
-    "min_s_picks": "min_s_score_sum",
-    "min_score": "min_r2",
-}
+OLD_NAMES = {"min_picks_ratio": "ransac_sample_ratio", "min_score": "ransac_min_r2"}  # names before 1.2
 
 
 def translate_old_config(config):
@@ -38,15 +33,23 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     """
     Earthquake location for a single event using RANSAC.
 
-    config:
-      min_picks             picks that must fit the location for the event to be kept
-      ransac_sample_ratio   RANSAC locates each trial from max(min_picks, ransac_sample_ratio * picks) random picks
-      min_p_score_sum,      the pick scores of each phase in a trial's sample must sum to at least this
-      min_s_score_sum       (1.5 is three picks of score 0.5), so a trial has both P and S
-      max_residual_time     a pick fits when its travel-time residual is within this (s)
-      min_r2                R2 of the travel-time fit that a trial, and the final location, must reach
+    Two groups of settings. The event definition is GaMMA's, tested here on the picks that fit the location (0 = off):
+      min_picks                         their number
+      min_score_sum                     the sum of their scores
+      min_p_score_sum, min_s_score_sum  the same per phase
+      min_p_picks, min_s_picks          their number per phase
+    The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
+      ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks
+      ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
+      ransac_min_s_score_sum            or to all the event has when it has less, so a trial has both P and S
+      ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
+      max_residual_time                 a pick fits when its travel-time residual is within this (s)
     """
     translate_old_config(config)
+    ## sampling rules, capped by what the event has: they choose good trials, they do not decide if the event exists
+    is_p = picks["phase_type"].isin([0, "P"]).values
+    need_p = min(config.get("ransac_min_p_score_sum", 1.0), picks["phase_score"].values[is_p].sum()) - 1e-9
+    need_s = min(config.get("ransac_min_s_score_sum", 1.0), picks["phase_score"].values[~is_p].sum()) - 1e-9
 
     def is_model_valid(estimator, X, y):
         """
@@ -56,13 +59,13 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         # n1 = np.sum(X[:, 1] == 1)  # S
         n0 = np.sum(X[X[:, 1] == 0, 2])
         n1 = np.sum(X[X[:, 1] == 1, 2])
-        if not (n0 >= config["min_p_score_sum"] and n1 >= config["min_s_score_sum"]):
+        if not (n0 >= need_p and n1 >= need_s):
             return False
 
         if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
             return False
 
-        if estimator.score(X, y) < config["min_r2"]:
+        if estimator.score(X, y) < config.get("ransac_min_r2", 0.5):
             return False
 
         return True
@@ -76,7 +79,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         # n1 = np.sum(X[:, 1] == 1)  # S
         n0 = np.sum(X[X[:, 1] == 0, 2])
         n1 = np.sum(X[X[:, 1] == 1, 2])
-        return n0 >= config["min_p_score_sum"] and n1 >= config["min_s_score_sum"]  # enough P and S in the sample
+        return n0 >= need_p and n1 >= need_s  # enough P and S in the sample
 
     MIN_PICKS = config["min_picks"]
     SAMPLE_RATIO = config["ransac_sample_ratio"]
@@ -223,7 +226,16 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             X[["idx_sta", "type", "score", "x_km", "y_km", "z_km"]].values[inlier_mask], y=X[["t_s"]].values[inlier_mask]
         )
 
-    if (np.sum(inlier_mask) >= MIN_PICKS) and (score >= config["min_r2"]):
+    ## the event definition, on the picks that fit
+    fit_score, fit_p = X["score"].values[inlier_mask], (X["type"].values == 0)[inlier_mask]
+    if (
+        len(fit_score) >= MIN_PICKS
+        and fit_score.sum() >= config.get("min_score_sum", 0)
+        and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0)
+        and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0)
+        and fit_p.sum() >= config.get("min_p_picks", 0)
+        and (~fit_p).sum() >= config.get("min_s_picks", 0)
+    ):
         mean_residual_time = np.sum(np.abs(X["t_s"].values - tt) * inlier_mask) / np.sum(inlier_mask)
         if has_amp:
             mean_residual_amp = np.nanmean(np.abs(X["amp"].values - amp)[inlier_mask])  # over picks with an amplitude
@@ -247,6 +259,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "adloc_score": score,
             "adloc_residual_time": mean_residual_time,
             "num_picks": np.sum(inlier_mask),
+            "num_p_picks": int(fit_p.sum()),
+            "num_s_picks": int((~fit_p).sum()),
         }
         if has_amp:
             event["magnitude"] = mag
