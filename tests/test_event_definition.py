@@ -33,7 +33,7 @@ def test_event_is_located_with_its_quality_columns():
     picks_out, event = locate(picks, stations, config)
     e = event.iloc[0]
     assert np.abs(e[["x_km", "y_km", "z_km"]].values.astype(float) - EVENT).max() < 0.2 and picks_out["mask"].all()
-    assert (e.num_picks, e.num_p_picks, e.num_s_picks, e.num_stations) == (24, 12, 12, 12)
+    assert (e.num_picks, e.num_p_picks, e.num_s_picks) == (24, 12, 12)
     az = np.sort(np.degrees(np.arctan2(x - EVENT[0], y - EVENT[1])))
     assert abs(e.azimuthal_gap - np.diff(np.append(az, az[0] + 360)).max()) < 2
 

@@ -272,7 +272,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             "num_picks": np.sum(inlier_mask),
             "num_p_picks": int(fit_p.sum()),
             "num_s_picks": int((~fit_p).sum()),
-            "num_stations": len(sta_xy),
             "azimuthal_gap": gap,
         }
         if has_amp:
