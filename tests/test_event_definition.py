@@ -39,10 +39,10 @@ def test_event_is_located_with_its_quality_columns():
     assert abs(e.azimuthal_gap - np.diff(np.append(az, az[0] + 360)).max()) < 2
 
 
-def test_sampling_rules_do_not_decide_that_the_event_exists():
+def test_event_with_weak_s_picks_is_decided_by_the_definition():
     picks, stations, config, _ = setup()
     weak_s = pd.concat([picks[picks.phase_type == 0], picks[picks.phase_type == 1].iloc[:3].assign(phase_score=0.2)])  # 3 S, sum 0.6
-    _, event = locate(weak_s, stations, config)  # a sample holds an S pick; how strong the S picks are is not its business
+    _, event = locate(weak_s, stations, config)  # S sum 0.6 >= min_s_score_sum 0.5
     assert event is not None and event.iloc[0].num_s_picks == 3
     _, event = locate(weak_s, stations, {**config, "min_s_score_sum": 1.0})  # the event definition does decide
     assert event is None

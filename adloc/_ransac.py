@@ -458,6 +458,7 @@ class RANSACRegressor(
         #   2. which picks: within each phase, by score.
         # No phase is forced into every sample: a pick that all samples hold could never be left out as wrong.
         is_p = X[:, 1] == 0
+        weight = np.maximum(X[:, 2], 1e-6)  # the scores; a pick of score 0 can still be drawn
         p_idxs, s_idxs = sample_idxs[is_p], sample_idxs[~is_p]
 
         self.n_trials_ = 0
@@ -470,11 +471,8 @@ class RANSACRegressor(
 
             # choose random sample set
             # subset_idxs = sample_without_replacement(n_samples, min_samples, random_state=random_state)
-            if len(p_idxs) and len(s_idxs):
-                n_p = random_state.hypergeometric(len(p_idxs), len(s_idxs), min_samples)  # P picks in this sample
-            else:
-                n_p = min_samples if len(p_idxs) else 0  # an event with one phase only
-            subset_idxs = np.concatenate([random_state.choice(idxs, n, replace=False, p=X[idxs, 2] / X[idxs, 2].sum())
+            n_p = random_state.hypergeometric(len(p_idxs), len(s_idxs), min_samples)  # P picks in this sample
+            subset_idxs = np.concatenate([random_state.choice(idxs, n, replace=False, p=weight[idxs] / weight[idxs].sum())
                                           for idxs, n in ((p_idxs, n_p), (s_idxs, min_samples - n_p)) if n > 0])
             X_subset = X[subset_idxs]
             y_subset = y[subset_idxs]

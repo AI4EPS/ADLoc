@@ -21,8 +21,8 @@ OLD_NAMES = {"min_picks_ratio": "ransac_sample_ratio", "min_score": "ransac_min_
 def translate_old_config(config):
     """Rename the settings from before 1.2 in place, so old configs keep running; one warning lists the changes.
     A config is old when it has min_picks_ratio or min_score, which every config before 1.2 had. Its min_p_picks and
-    min_s_picks were score sums that each RANSAC sample had to reach; that rule is gone (a sample now only holds each
-    phase the event has), so they are dropped. In a new config they are counts on the fitting picks.
+    min_s_picks were score sums that each RANSAC sample had to reach; that rule is gone, so they
+    are dropped. In a new config they are counts on the fitting picks.
     A new name, when also set, wins."""
     old = [k for k in OLD_NAMES if k in config]
     if not old:
