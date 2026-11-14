@@ -367,7 +367,7 @@ def invert_location(picks, stations, config, estimator, events_init=None, iter=0
     pbar = tqdm(total=num_events, desc=f"Iter {iter}")
     # config and the estimator reach each worker once, through the initializer; the tables (MBs) through a
     # memory-mapped file, since initializer data above the 64 KB pipe buffer make spawn start the workers one by one
-    tmp = tempfile.TemporaryDirectory()
+    tmp = tempfile.TemporaryDirectory(dir="/dev/shm" if os.path.isdir("/dev/shm") else None)  # memory: a node's /tmp can be full
     shared = (config, estimator, None)
     eikonal = estimator.eikonal
     if eikonal is not None:

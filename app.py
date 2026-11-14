@@ -44,10 +44,10 @@ def set_config(region="ridgecrest"):
         "min_picks": 8,
         "ransac_sample_ratio": 0.2,
         "max_residual_time": 1.0,
-        "max_residual_amplitude": 1.0,
         "min_r2": 0.6,
-        "min_s_score_sum": 2,
-        "min_p_score_sum": 2,
+        "ransac_min_r2": 0.6,
+        "ransac_min_s_score_sum": 2,
+        "ransac_min_p_score_sum": 2,
         "use_amplitude": False,
     }
 
