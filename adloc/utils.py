@@ -15,7 +15,7 @@ from pyproj import Proj
 from ._ransac import RANSACRegressor
 
 
-OLD_NAMES = {"min_picks_ratio": "ransac_sample_ratio", "min_score": "ransac_min_r2"}  # names before 1.2
+OLD_NAMES = {"min_picks_ratio": ["ransac_sample_ratio"], "min_score": ["ransac_min_r2", "min_r2"]}  # names before 1.2
 
 
 def translate_old_config(config):
@@ -23,9 +23,11 @@ def translate_old_config(config):
     A new name, when also set, wins."""
     old = [k for k in OLD_NAMES if k in config]
     for k in old:
-        config.setdefault(OLD_NAMES[k], config.pop(k))
+        v = config.pop(k)
+        for new in OLD_NAMES[k]:
+            config.setdefault(new, v)
     if old:
-        warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {OLD_NAMES[k]}" for k in old), stacklevel=3)
+        warnings.warn("ADLoc config names changed in 1.2: " + ", ".join(f"{k} -> {' and '.join(OLD_NAMES[k])}" for k in old), stacklevel=3)
     return config
 
 
@@ -39,6 +41,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       min_score_sum                     the sum of their scores (default 0.5 * min_picks)
       min_p_score_sum, min_s_score_sum  the same per phase (default 0.5 each)
       min_p_picks, min_s_picks          their number per phase (default 0)
+    and the location must explain their arrival times:
+      min_r2                            R2 of the travel-time fit on the fitting picks (default 0.5)
     The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped:
       ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
       ransac_min_p_score_sum,           the scores of each phase in a trial's sample sum to at least this (default 1.0),
@@ -231,7 +235,8 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     ## the event definition, on the picks that fit
     fit_score, fit_p = X["score"].values[inlier_mask], (X["type"].values == 0)[inlier_mask]
     if (
-        len(fit_score) >= MIN_PICKS
+        score >= config.get("min_r2", 0.5)  # the location explains the arrival times: unrelated picks do not pass
+        and len(fit_score) >= MIN_PICKS
         and fit_score.sum() >= config.get("min_score_sum", 0.5 * MIN_PICKS)
         and fit_score[fit_p].sum() >= config.get("min_p_score_sum", 0.5)
         and fit_score[~fit_p].sum() >= config.get("min_s_score_sum", 0.5)
