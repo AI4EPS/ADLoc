@@ -51,7 +51,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
       use_amplitude                     amplitudes always give the magnitude; True (default False) also uses them to
                                         judge: they enter R2, and max_residual_amplitude applies
     The sampling settings only decide which RANSAC trials are fitted; an event with no valid trial is skipped.
-    A trial's sample holds each phase the event has (P and S), so that depth and origin time are constrained:
+    A sample is drawn phase by phase, so a trial has P and S when the event has them (see _ransac.py):
       ransac_sample_ratio               a trial is located from max(min_picks, ransac_sample_ratio * picks) random picks (default 0.5)
       ransac_min_r2                     R2 of the trial's travel-time fit (default 0.5)
     """
@@ -69,15 +69,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
             return False
 
         return True
-
-    def is_data_valid(X, y):
-        """
-        X: idx_sta, type, score, amp
-        y: t_s
-        """
-        # n0 = np.sum(X[:, 1] == 0)  # P
-        # n1 = np.sum(X[:, 1] == 1)  # S
-        return all((X[:, 1] == k).any() for k in phases)  # the sample holds each phase the event has
 
     MIN_PICKS = config.get("min_picks", 5)  # the defaults of the event definition are GaMMA's
     SAMPLE_RATIO = config.get("ransac_sample_ratio", 0.5)
@@ -171,11 +162,18 @@ def invert(picks, stations, config, estimator, event_index, event_init):
     #     estimator.fit(X[["idx_sta", "type", "score"]].values, y=X[["t_s"]].values)
     # inlier_mask = np.ones(len(X)).astype(bool)
 
-    phases = np.unique(X["type"].values)  # 0: P, 1: S
-
     ## Location using RANSAC
     num_picks = len(X)
-    if num_picks < max(MIN_PICKS, int(SAMPLE_RATIO * num_picks)):
+    ## Fitting only removes picks: an event whose picks do not meet the event definition cannot meet it afterwards
+    is_p = X["type"].values == 0
+    if (
+        num_picks < MIN_PICKS
+        or X["score"].sum() < config.get("min_score_sum", 0.5 * MIN_PICKS)
+        or X["score"].values[is_p].sum() < config.get("min_p_score_sum", 0.5)
+        or X["score"].values[~is_p].sum() < config.get("min_s_score_sum", 0.5)
+        or is_p.sum() < config.get("min_p_picks", 0)
+        or (~is_p).sum() < config.get("min_s_picks", 0)
+    ):
         picks["mask"] = 0
         picks["residual_time"] = 0.0
         if has_amp:
@@ -189,7 +187,6 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         # residual_threshold=MAX_RESIDUAL * (1.0 - np.exp(-rstd / 60.0)),  # not sure which one is better
         residual_threshold=MAX_RESIDUAL,
         is_model_valid=is_model_valid,
-        is_data_valid=is_data_valid,
     )
     try:
         if has_amp:
