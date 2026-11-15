@@ -63,7 +63,7 @@ def invert(picks, stations, config, estimator, event_index, event_init):
         """
         # n0 = np.sum(X[:, 1] == 0)  # P
         # n1 = np.sum(X[:, 1] == 1)  # S
-        if estimator.events[0][2] < estimator.config["zlim_km"][0]:  # above the allowed depths (< 0 above sea level)
+        if estimator.events[0][2] in estimator.bounds[2]:  # at a depth limit: the fit ran into it, so this sample does not give the depth
             return False
 
         if estimator.score(X, y) < config.get("ransac_min_r2", 0.5):
