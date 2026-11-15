@@ -81,6 +81,12 @@ def test_unrelated_picks_are_not_an_event():
     assert locate(noise, stations, config)[1] is None
 
 
+def test_trial_at_a_depth_limit_is_not_valid():
+    picks, stations, config, _ = setup()  # the event is at 5 km
+    assert locate(picks, stations, {**config, "zlim_km": (0, 3)})[1] is None  # every trial ends at the 3 km limit
+    assert locate(picks, stations, {**config, "zlim_km": (0, 6)})[1] is not None
+
+
 def test_amplitudes_judge_only_with_use_amplitude_and_a_limit():
     picks, stations, config, _ = setup()
     x, y = PROJ(stations.longitude.values, stations.latitude.values)
